@@ -4,7 +4,18 @@ Generate list of api endpoints & stack outputs for consumption in other applicat
 
 This will output to `.serverless/manifest.json` file.
 
-## Example:
+## Usage
+
+Add to plugins array in `serverless.yml`
+
+```yml
+service: my-example-service
+
+plugins:
+ - serverless-manifest-plugin
+```
+
+## Example
 
 Outputs `urls`, `functions`, `outputs` etc.
 
