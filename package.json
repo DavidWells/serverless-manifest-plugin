@@ -1,0 +1,21 @@
+
+{
+  "name": "serverless-manifest-plugin",
+  "version": "0.0.4",
+  "description": "Output api endpoints and resource values for consumption",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "publish": "git push origin && git push origin --tags",
+    "release:patch": "npm version patch && npm publish",
+    "release:minor": "npm version minor && npm publish",
+    "release:major": "npm version major && npm publish"
+  },
+  "author": "David Wells",
+  "license": "MIT",
+  "homepage": "https://github.com/DavidWells/serverless-manifest-plugin#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DavidWells/serverless-manifest-plugin"
+  },
+}
