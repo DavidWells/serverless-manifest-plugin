@@ -65,13 +65,6 @@ function saveManifest(manifestData, callback) {
   }
   const data = JSON.stringify(manifestData, null, 2)
   fs.writeFileSync(manifestPath, data)
-  // add to .hidden folder as well
-  const tmpHiddenFolder = path.join(cwd, '.hidden')
-  if (!fsExistsSync(tmpHiddenFolder)) {
-    fs.writeFileSync(
-      path.join(tmpHiddenFolder, 'manifest.json'
-    ), data)
-  }
 }
 
 function getManifestData(filePath) {
