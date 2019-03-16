@@ -1,14 +1,23 @@
 const fs = require('fs')
 const path = require('path')
-const util = require('util') // eslint-disable-line
+const util = require('util')
 
 class ServerlessManifestPlugin {
   constructor(serverless, options) {
     this.serverless = serverless
-
+    this.commands = {
+      manifest: {
+        lifecycleEvents: [
+          'create'
+        ],
+        usage: 'Generate a manifest file',
+      },
+    }
     this.hooks = {
+      // expose manifest command
+      'manifest:create': this.afterDeploy.bind(this),
       // create after deploy
-      'after:deploy:deploy': this.afterDeploy.bind(this)
+      'after:deploy:finalize': this.afterDeploy.bind(this),
     }
   }
   getData() {
@@ -16,43 +25,39 @@ class ServerlessManifestPlugin {
     var provider = this.serverless.getProvider('aws')
     var stage = provider.getStage()
     var region = provider.getRegion()
-    var params = { StackName: name + '-' + stage }
+    var params = { StackName: `${name}-${stage}` }
 
-    return new Promise((resolve, reject) => { // eslint-disable-line
-      provider.request(
-        'CloudFormation',
-        'describeStacks',
-        params,
-        stage,
-        region
-      ).then((data) => {
-        var stack = data.Stacks.pop() || { Outputs: [] }
-
-        var manifestData = getFormattedData(this.serverless.service, stack)
-
-        var stageData = {}
-        stageData[stage] = manifestData
-
-        resolve(stageData)
-      })
+    return new Promise((resolve, reject) => {
+      provider.request('CloudFormation', 'describeStacks', params, stage, region)
+        .then((data) => {
+          var stack = data.Stacks.pop() || { Outputs: [] }
+          var manifestData = getFormattedData(this.serverless.service, stack)
+          var stageData = {}
+          stageData[stage] = manifestData
+          resolve(stageData)
+        })
     })
   }
-  afterDeploy() {
+  async afterDeploy() {
     // console.log('this runs after deploy')
-    this.getData().then((stageData) => {
-      const cwd = process.cwd()
-      // console.log('stageData', stageData)
-      const dotServerlessFolder = path.join(cwd, '.serverless')
-      const manifestPath = path.join(dotServerlessFolder, 'manifest.json')
-      const currentManifest = getManifestData(manifestPath)
-      // merge together values. TODO deep merge
-      const manifestData = Object.assign({}, currentManifest, stageData)
-      // write to config file
-      saveManifest(manifestData, () => {
-        console.log(`Serverless manifest saved to ${manifestPath}`)
-      })
+    // console.log('this runs after deploy')
+    const stageData = await this.getData()
+
+    // console.log('stageData', stageData)
+    const cwd = process.cwd()
+    // console.log('stageData', stageData)
+    const dotServerlessFolder = path.join(cwd, '.serverless')
+    const manifestPath = path.join(dotServerlessFolder, 'manifest.json')
+    const currentManifest = getManifestData(manifestPath)
+    // merge together values. TODO deep merge
+    const manifestData = Object.assign({}, currentManifest, stageData)
+    // console.log('manifestData', manifestData)
+    // write to config file
+    saveManifest(manifestData, () => {
+      console.log(`Serverless manifest saved to ${manifestPath}`)
     })
   }
+  // https://github.com/dittto/serverless-shared-vars/blob/master/index.js#L15-L21
 }
 
 function saveManifest(manifestData, callback) {
@@ -65,6 +70,9 @@ function saveManifest(manifestData, callback) {
   }
   const data = JSON.stringify(manifestData, null, 2)
   fs.writeFileSync(manifestPath, data)
+  if (callback) {
+    callback()
+  }
 }
 
 function getManifestData(filePath) {
@@ -82,7 +90,7 @@ function getFormattedData(yaml, stackOutput) {
   let resources = {}
   if (yaml && yaml.resources && yaml.resources.Resources) {
     resources = yaml.resources.Resources
-    //console.log('resources', resources)
+    // console.log('resources', resources)
   }
 
   let outputs = {}
@@ -154,7 +162,6 @@ function getFormattedData(yaml, stackOutput) {
           arn: fData.OutputValue
         }
       })
-
     }
     return obj
   }, {
