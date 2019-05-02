@@ -2,7 +2,7 @@
   "name": "serverless-manifest-plugin",
   "version": "0.0.7",
   "description": "Output api endpoints and resource values for consumption",
-  "main": "index.js",
+  "main": "src/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "publish": "git push origin && git push origin --tags",
@@ -17,6 +17,14 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/DavidWells/serverless-manifest-plugin"
+  },
+  "dependencies": {
+    "debug": "^4.1.1",
+    "npm-packlist": "^1.4.1",
+    "precinct": "^6.1.2",
+    "read-pkg-up": "^5.0.0",
+    "require-package-name": "^2.0.1",
+    "resolve": "^1.10.1"
   },
   "devDependencies": {
     "auto-changelog": "^1.10.2"
