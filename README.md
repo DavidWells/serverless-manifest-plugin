@@ -15,6 +15,25 @@ plugins:
  - serverless-manifest-plugin
 ```
 
+### Generating a manifest file
+
+The plugin will automatically create the manifest when you run `sls deploy`
+
+
+You can also manually generate the manifest at anytime with
+
+```
+sls manfifest
+```
+
+### Programatic usage
+
+Using the `json` flag will pipe the `stdout` of the manifest. You can use this with a tool like [`jq`](https://stedolan.github.io/jq/) to do something programatic with the data.
+
+```
+sls manfifest --json
+```
+
 ## Example
 
 Outputs `urls`, `functions`, `outputs` etc.
@@ -53,16 +72,52 @@ Outputs `urls`, `functions`, `outputs` etc.
             "post"
           ]
         }
+      },
+      "byMethod": {
+        "post": [
+          "https://abc-123.execute-api.us-west-1.amazonaws.com/dev/track",
+          "https://abc-123.execute-api.us-west-1.amazonaws.com/dev/identify"
+        ]
       }
     },
     "functions": {
       "track": {
         "name": "my-example-service-dev-track",
-        "arn": "arn:aws:lambda:us-west-1:123456:function:my-example-service-dev-track:3"
+        "arn": "arn:aws:lambda:us-west-1:123456:function:my-example-service-dev-track:3",
+        "runtime": "nodejs8.10",
+        "triggers": [
+          [
+            "http"
+          ]
+        ],
+        "dependancies": {
+          "direct": [
+            "analytics-node"
+          ],
+          "nested": [
+            "uuid",
+            "remove-trailing-slash"
+          ]
+        }
       },
       "identify": {
         "name": "my-example-service-dev-identify",
-        "arn": "arn:aws:lambda:us-west-1:123456:function:my-example-service-dev-identify:3"
+        "arn": "arn:aws:lambda:us-west-1:123456:function:my-example-service-dev-identify:3",
+        "runtime": "nodejs8.10",
+        "triggers": [
+          [
+            "http"
+          ]
+        ],
+        "dependancies": {
+          "direct": [
+            "analytics-node"
+          ],
+          "nested": [
+            "uuid",
+            "remove-trailing-slash"
+          ]
+        }
       }
     },
     "outputs": [

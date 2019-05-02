@@ -2,8 +2,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const util = require('util')
-const precinct = require('precinct')
-const getDependencies = require('./getDeps')
+const { getDependencies, getShallowDeps } = require('./getDeps')
 
 class ServerlessManifestPlugin {
   constructor(serverless, options) {
@@ -208,8 +207,6 @@ function getFormattedData(yaml = {}, stackOutput) {
 
       obj.urls['byMethod'] = Object.assign({}, obj.urls['byMethod'], dataByMethod)
 
-
-
       // console.log('yaml.functions', yaml.functions[functionName])
 
       /* If runtime is node we can parse and list dependancies */
@@ -220,10 +217,7 @@ function getFormattedData(yaml = {}, stackOutput) {
         const functionPath = getFunctionPath(functionData, yaml)
         const functionContent = fs.readFileSync(functionPath, 'utf8')
 
-        const directDeps = precinct(functionContent).filter((d) => {
-          return !d.match(/^\.\//)
-        })
-
+        const directDeps = getShallowDeps(functionContent)
 
         const deps = getDependencies(functionPath, process.cwd())
 

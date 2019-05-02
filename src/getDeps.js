@@ -35,7 +35,7 @@ function includeModuleFile(packageJson, moduleFilePath) {
   return !ignoredExtensions.has(path.extname(moduleFilePath));
 }
 
-module.exports = function getDependencies(filename, basedir) {
+function getDependencies(filename, basedir) {
   const servicePath = basedir;
 
   const filePaths = new Set();
@@ -157,4 +157,15 @@ Please ensure "${moduleName}" is installed in the project.`);
   debug("Sizes per extension: ", sizes);
 
   return Array.from(filePaths);
+}
+
+function getShallowDeps(fileContent) {
+  return precinct(fileContent).filter((d) => {
+    return !d.match(/^\.\//)
+  })
+}
+
+module.exports = {
+  getDependencies,
+  getShallowDeps
 }
