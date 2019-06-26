@@ -46,7 +46,7 @@ class ServerlessManifestPlugin {
     var provider = this.serverless.getProvider('aws')
     var stage = provider.getStage()
     var region = provider.getRegion()
-    var stackName = provider.naming.getStackName();
+    var stackName = provider.naming.getStackName()
     var params = { StackName: `${stackName}` }
 
     return new Promise((resolve, reject) => {
