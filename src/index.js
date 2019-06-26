@@ -46,7 +46,8 @@ class ServerlessManifestPlugin {
     var provider = this.serverless.getProvider('aws')
     var stage = provider.getStage()
     var region = provider.getRegion()
-    var params = { StackName: `${name}-${stage}` }
+    var stackName = provider.naming.getStackName();
+    var params = { StackName: `${stackName}` }
 
     return new Promise((resolve, reject) => {
       provider.request('CloudFormation', 'describeStacks', params, stage, region)
