@@ -1,6 +1,6 @@
 # Serverless Manifest Plugin
 
-Generate list of api endpoints & stack outputs for consumption in other applications + service discovery.
+Generate list of API endpoints & stack outputs for consumption in other applications + service discovery.
 
 This will output to `.serverless/manifest.json` file.
 
@@ -19,19 +19,18 @@ plugins:
 
 The plugin will automatically create the manifest when you run `sls deploy`
 
-
 You can also manually generate the manifest at anytime with
 
-```
-sls manfifest
+```bash
+sls manifest
 ```
 
 ### Programatic usage
 
 Using the `json` flag will pipe the `stdout` of the manifest. You can use this with a tool like [`jq`](https://stedolan.github.io/jq/) to do something programatic with the data.
 
-```
-sls manfifest --json
+```bash
+sls manifest --json
 ```
 
 ## Example
