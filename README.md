@@ -23,7 +23,7 @@ The plugin will automatically create the manifest when you run `sls deploy`
 You can also manually generate the manifest at anytime with
 
 ```
-sls manfifest
+sls manifest
 ```
 
 ### Programatic usage
@@ -31,7 +31,7 @@ sls manfifest
 Using the `json` flag will pipe the `stdout` of the manifest. You can use this with a tool like [`jq`](https://stedolan.github.io/jq/) to do something programatic with the data.
 
 ```
-sls manfifest --json
+sls manifest --json
 ```
 
 ## Example
