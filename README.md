@@ -1,8 +1,8 @@
 # Serverless Manifest Plugin
 
-Generate list of api endpoints & stack outputs for consumption in other applications + service discovery.
+Generate list of api endpoints, function information & stack outputs to a service manifest file. This is useful for consuming stack values in other applications and for service discovery.
 
-This will output to `.serverless/manifest.json` file.
+After `serverless deploy` finishes, a `.serverless/manifest.json` file, is created.
 
 ## Usage
 
@@ -44,109 +44,172 @@ Outputs `urls`, `functions`, `outputs` etc.
 {
   "dev": {
     "urls": {
-      "base": "https://abc-123.execute-api.us-west-1.amazonaws.com/dev",
+      "apiGateway": "https://abc1234.execute-api.us-east-1.amazonaws.com/dev",
+      "apiGatewayBaseURL": "https://abc1234.execute-api.us-east-1.amazonaws.com/dev",
+      "httpApi": "https://qwertyxyz.execute-api.us-east-1.amazonaws.com",
+      "httpApiBaseURL": "https://qwertyxyz.execute-api.us-east-1.amazonaws.com",
       "byPath": {
-        "track": {
-          "url": "https://abc-123.execute-api.us-west-1.amazonaws.com/dev/track",
-          "method": [
-            "post"
+        "/user/profile": {
+          "url": "https://qwertyxyz.execute-api.us-east-1.amazonaws.com/user/profile",
+          "methods": [
+            "POST",
+            "GET"
           ]
         },
-        "identify": {
-          "url": "https://abc-123.execute-api.us-west-1.amazonaws.com/dev/identify",
-          "method": [
-            "post"
+        "/tester": {
+          "url": "https://abc1234.execute-api.us-east-1.amazonaws.com/dev/tester",
+          "methods": [
+            "POST"
+          ]
+        },
+        "/wow-cool": {
+          "url": "https://abc1234.execute-api.us-east-1.amazonaws.com/dev/wow-cool",
+          "methods": [
+            "POST"
           ]
         }
       },
       "byFunction": {
-        "track": {
-          "url": "https://abc-123.execute-api.us-west-1.amazonaws.com/dev/track",
-          "method": [
-            "post"
+        "getProfileInfo": {
+          "url": "https://qwertyxyz.execute-api.us-east-1.amazonaws.com/user/profile",
+          "methods": [
+            "GET"
           ]
         },
-        "identify": {
-          "url": "https://abc-123.execute-api.us-west-1.amazonaws.com/dev/identify",
-          "method": [
-            "post"
+        "createProfileInfo": {
+          "url": "https://qwertyxyz.execute-api.us-east-1.amazonaws.com/user/profile",
+          "methods": [
+            "POST"
+          ]
+        },
+        "other": {
+          "url": "https://abc1234.execute-api.us-east-1.amazonaws.com/dev/tester",
+          "methods": [
+            "POST"
+          ]
+        },
+        "forth": {
+          "url": "https://abc1234.execute-api.us-east-1.amazonaws.com/dev/wow-cool",
+          "methods": [
+            "POST"
           ]
         }
       },
       "byMethod": {
-        "post": [
-          "https://abc-123.execute-api.us-west-1.amazonaws.com/dev/track",
-          "https://abc-123.execute-api.us-west-1.amazonaws.com/dev/identify"
+        "GET": [
+          "https://qwertyxyz.execute-api.us-east-1.amazonaws.com/user/profile"
+        ],
+        "POST": [
+          "https://qwertyxyz.execute-api.us-east-1.amazonaws.com/user/profile",
+          "https://abc1234.execute-api.us-east-1.amazonaws.com/dev/tester",
+          "https://abc1234.execute-api.us-east-1.amazonaws.com/dev/wow-cool"
         ]
       }
     },
     "functions": {
-      "track": {
-        "name": "my-example-service-dev-track",
-        "arn": "arn:aws:lambda:us-west-1:123456:function:my-example-service-dev-track:3",
-        "runtime": "nodejs8.10",
+      "getProfileInfo": {
+        "name": "http-api-node-dev-getProfileInfo",
+        "arn": "arn:aws:lambda:us-east-1:xxxxxxxxxxxx:function:http-api-node-dev-getProfileInfo:4",
+        "runtime": "nodejs12.x",
         "triggers": [
-          [
-            "http"
-          ]
+          "httpApi"
         ],
         "dependancies": {
           "direct": [
-            "analytics-node"
+            "faker@^4.1.0",
+            "analytics@^0.3.4"
           ],
           "nested": [
-            "uuid",
-            "remove-trailing-slash"
+            "analytics-utils@^0.2.0",
+            "dlv@^1.1.3",
+            "@analytics/storage-utils@^0.2.3",
+            "@analytics/cookie-utils@^0.2.3"
           ]
         }
       },
-      "identify": {
-        "name": "my-example-service-dev-identify",
-        "arn": "arn:aws:lambda:us-west-1:123456:function:my-example-service-dev-identify:3",
-        "runtime": "nodejs8.10",
+      "createProfileInfo": {
+        "name": "http-api-node-dev-createProfileInfo",
+        "arn": "arn:aws:lambda:us-east-1:xxxxxxxxxxxx:function:http-api-node-dev-createProfileInfo:4",
+        "runtime": "nodejs12.x",
         "triggers": [
-          [
-            "http"
-          ]
+          "httpApi"
         ],
         "dependancies": {
           "direct": [
-            "analytics-node"
+            "faker@^4.1.0",
+            "analytics@^0.3.4"
           ],
           "nested": [
-            "uuid",
-            "remove-trailing-slash"
+            "analytics-utils@^0.2.0",
+            "dlv@^1.1.3",
+            "@analytics/storage-utils@^0.2.3",
+            "@analytics/cookie-utils@^0.2.3"
           ]
+        }
+      },
+      "other": {
+        "name": "http-api-node-dev-other",
+        "arn": "arn:aws:lambda:us-east-1:xxxxxxxxxxxx:function:http-api-node-dev-other:3",
+        "runtime": "nodejs12.x",
+        "triggers": [
+          "http"
+        ],
+        "dependancies": {
+          "direct": [
+            "faker@^4.1.0"
+          ],
+          "nested": []
+        }
+      },
+      "forth": {
+        "name": "http-api-node-dev-forth",
+        "arn": "arn:aws:lambda:us-east-1:xxxxxxxxxxxx:function:http-api-node-dev-forth:2",
+        "runtime": "nodejs12.x",
+        "triggers": [
+          "http"
+        ],
+        "dependancies": {
+          "direct": [
+            "lodash@4.17.15"
+          ],
+          "nested": []
         }
       }
     },
     "outputs": [
       {
-        "OutputKey": "TrackLambdaFunctionQualifiedArn",
-        "OutputValue": "arn:aws:lambda:us-west-1:123456:function:my-example-service-dev-track:3",
+        "OutputKey": "OtherLambdaFunctionQualifiedArn",
+        "OutputValue": "arn:aws:lambda:us-east-1:xxxxxxxxxxxx:function:http-api-node-dev-other:3",
         "Description": "Current Lambda function version"
       },
       {
-        "OutputKey": "DomainName",
-        "OutputValue": "1234abcd.cloudfront.net"
+        "OutputKey": "GetProfileInfoLambdaFunctionQualifiedArn",
+        "OutputValue": "arn:aws:lambda:us-east-1:xxxxxxxxxxxx:function:http-api-node-dev-getProfileInfo:4",
+        "Description": "Current Lambda function version"
       },
       {
-        "OutputKey": "HostedZoneId",
-        "OutputValue": "abcdef"
-      },
-      {
-        "OutputKey": "IdentifyLambdaFunctionQualifiedArn",
-        "OutputValue": "arn:aws:lambda:us-west-1:123456:function:my-example-service-dev-identify:3",
+        "OutputKey": "ForthLambdaFunctionQualifiedArn",
+        "OutputValue": "arn:aws:lambda:us-east-1:xxxxxxxxxxxx:function:http-api-node-dev-forth:2",
         "Description": "Current Lambda function version"
       },
       {
         "OutputKey": "ServiceEndpoint",
-        "OutputValue": "https://abc-123.execute-api.us-west-1.amazonaws.com/dev",
+        "OutputValue": "https://abc1234.execute-api.us-east-1.amazonaws.com/dev",
         "Description": "URL of the service endpoint"
       },
       {
         "OutputKey": "ServerlessDeploymentBucketName",
-        "OutputValue": "my-example-service-serverlessdeploymentbuck-abc123"
+        "OutputValue": "http-api-node-dev-serverlessdeploymentbucket-12eu0mj9zoo0s"
+      },
+      {
+        "OutputKey": "CreateProfileInfoLambdaFunctionQualifiedArn",
+        "OutputValue": "arn:aws:lambda:us-east-1:xxxxxxxxxxxx:function:http-api-node-dev-createProfileInfo:4",
+        "Description": "Current Lambda function version"
+      },
+      {
+        "OutputKey": "HttpApiUrl",
+        "OutputValue": "https://qwertyxyz.execute-api.us-east-1.amazonaws.com",
+        "Description": "URL of the HTTP API"
       }
     ]
   }

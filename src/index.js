@@ -7,7 +7,7 @@ const { getDependencies, getShallowDeps } = require('./getDeps')
 class ServerlessManifestPlugin {
   constructor(serverless, options) {
     this.serverless = serverless
-    this.options = options;
+    this.options = options
     this.commands = {
       manifest: {
         usage: 'Generate a service manifest file',
@@ -241,7 +241,6 @@ function getFormattedData(yaml = {}, stackOutput) {
         const directDeps = getShallowDeps(functionContent)
 
         const [deps, pkgData] = getDependencies(functionPath, process.cwd())
-
         // console.log('deps', deps)
         // Collect all node modules uses
         const modules = Array.from(new Set(deps.map((dir) => {
@@ -270,7 +269,7 @@ function getFormattedData(yaml = {}, stackOutput) {
     }
 
     // Format function triggers
-    const removeList = ["resolvedMethod", "resolvedPath"]
+    const removeList = ['resolvedMethod', 'resolvedPath']
     const eventTriggers = new Set()
     const functionEventTriggers = functionEvents.reduce((acc, event) => {
       const triggers = Object.keys(event)
@@ -321,9 +320,15 @@ function upperCase(str) {
   return str.toUpperCase()
 }
 
+// Add dependency versions to package names
 function addDependancyVersions(array, pkgData) {
   return array.map((name) => {
-    return pkgData[name]._from
+    if (!pkgData[name] || !pkgData[name]._from) {
+      return name
+    }
+    const from = pkgData[name]._from
+    const pkgWithVersion = from.match(/@/) ? from : `${from}@${pkgData[name].version}`
+    return pkgWithVersion
   })
 }
 
