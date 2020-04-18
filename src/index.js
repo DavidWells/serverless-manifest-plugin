@@ -81,11 +81,15 @@ class ServerlessManifestPlugin {
     if (this.options.noSave) {
       return false
     }
+    if (!this.options.silent && !this.options.json) {
+      console.log('Generating serverless manifest file...')
+      console.log()
+    }
     saveManifest(manifestData, () => {
       if (this.options.silent || this.options.json) {
         return false
       }
-      console.log(`Serverless manifest saved to\n${manifestPath}`)
+      console.log(`Complete! Serverless manifest saved to:\n${manifestPath}`)
     })
   }
   // https://github.com/dittto/serverless-shared-vars/blob/master/index.js#L15-L21
@@ -143,65 +147,82 @@ function getFormattedData(yaml = {}, stackOutput) {
 
     if (functionData.events) {
       const domainInfo = hasCustomDomain(yaml)
+      const restAPIBaseURL = getRESTUrl(stackOutput.Outputs)
+      const httpAPIBaseURL = getHTTPUrl(stackOutput.Outputs)
       if (domainInfo) {
         const customBasePath = domainInfo.basePath || ''
-        obj.urls['base'] = `https://${domainInfo.domainName}/${customBasePath}`
+        obj.urls['apiGateway'] = `https://${domainInfo.domainName}/${customBasePath}`
       } else {
-        obj.urls['base'] = getApiBaseUrl(stackOutput.Outputs)
+        obj.urls['apiGateway'] = restAPIBaseURL
       }
 
       // Set base url
-      if (!obj.urls['baseRaw']) {
-        obj.urls['baseRaw'] = getApiBaseUrl(stackOutput.Outputs)
+      if (restAPIBaseURL) {
+        obj.urls['apiGatewayBaseURL'] = restAPIBaseURL
+      }
+      if (httpAPIBaseURL) {
+        obj.urls['httpApi'] = httpAPIBaseURL
+        obj.urls['httpApiBaseURL'] = httpAPIBaseURL
       }
 
       // Set url byPath
       const dataByPath = functionData.events.reduce((acc, event) => {
-        if (event.http) {
-          const value = acc[`${event.http.path}`]
-          let method = [event.http.method]
-          if (value && value.method.length) {
+        const httpEvent = isHttpTrigger(event)
+        if (httpEvent) {
+          const URI = getApiBaseUrl(event, obj)
+          const hasPathValue = acc[`${httpEvent.path}`]
+          let methods = [ upperCase(httpEvent.method) ]
+          if (hasPathValue && hasPathValue.methods && hasPathValue.methods.length) {
             // combine methods
-            method = method.concat(value.method)
+            methods = methods.concat(hasPathValue.methods)
           }
-          acc[`${event.http.path}`] = {
-            url: `${obj.urls['base']}/${event.http.path}`,
-            method: method
+          const httpPath = formatPath(httpEvent.path)
+          acc[`${httpPath}`] = {
+            url: `${formatURL(URI)}${httpPath}`,
+            methods: methods
           }
         }
         return acc
-      }, {})
+      }, obj.urls['byPath'])
 
-      obj.urls['byPath'] = Object.assign({}, obj.urls['byPath'], dataByPath)
+      // console.log('dataByPath', dataByPath)
+
+      obj.urls['byPath'] = dataByPath
 
       // Set url functionName
       const dataByFunction = functionData.events.reduce((acc, event) => {
-        if (event.http) {
-          const value = acc[`${functionName}`]
-          let method = [event.http.method]
-          if (value && value.method.length) {
+        const httpEvent = isHttpTrigger(event)
+        if (httpEvent) {
+          const URI = getApiBaseUrl(event, obj)
+          const hasPathValue = acc[`${functionName}`]
+          let methods = [ upperCase(httpEvent.method) ]
+          if (hasPathValue && hasPathValue.methods && hasPathValue.methods.length) {
             // combine methods
-            method = method.concat(value.method)
+            methods = methods.concat(hasPathValue.methods)
           }
+          const httpPath = formatPath(httpEvent.path)
           acc[`${functionName}`] = {
-            url: `${obj.urls['base']}/${event.http.path}`,
-            method: method
+            url: `${formatURL(URI)}${httpPath}`,
+            methods: methods
           }
         }
         return acc
-      }, {})
+      }, obj.urls['byFunction'])
 
-      obj.urls['byFunction'] = Object.assign({}, obj.urls['byFunction'], dataByFunction)
+      obj.urls['byFunction'] = dataByFunction
 
       const dataByMethod = functionData.events.reduce((acc, event) => {
-        if (event.http) {
-          const value = obj.urls['byMethod'][`${event.http.method}`]
-          const url = `${obj.urls['base']}/${event.http.path}`
+        const httpEvent = isHttpTrigger(event)
+        if (httpEvent) {
+          const URI = getApiBaseUrl(event, obj)
+          const value = obj.urls['byMethod'][`${upperCase(httpEvent.method)}`]
+          const httpPath = formatPath(httpEvent.path)
+          const url = `${formatURL(URI)}${httpPath}`
           let urls = [url]
           if (value && value.length) {
             urls = value.concat(url)
           }
-          acc[`${event.http.method}`] = urls
+          acc[`${httpEvent.method}`] = urls
         }
         return acc
       }, {})
@@ -214,45 +235,59 @@ function getFormattedData(yaml = {}, stackOutput) {
       // console.log('functionRuntime', functionRuntime)
 
       if (functionRuntime.match(/nodejs/)) {
-
         const functionPath = getFunctionPath(functionData, yaml)
         const functionContent = fs.readFileSync(functionPath, 'utf8')
 
         const directDeps = getShallowDeps(functionContent)
 
-        const deps = getDependencies(functionPath, process.cwd())
+        const [deps, pkgData] = getDependencies(functionPath, process.cwd())
 
+        // console.log('deps', deps)
         // Collect all node modules uses
-        const modules = deps.map((dir) => {
+        const modules = Array.from(new Set(deps.map((dir) => {
           return dir.replace(process.cwd(), '')
         }).filter((d) => {
+          // console.log('d', d)
           return d.match((/\/node_modules/))
         }).map((dir) => {
-          return path.dirname(dir).replace(/^\/node_modules\//, '').split('/')[0]
-        })
+          const fileParts = path.dirname(dir).replace(/^\/node_modules\//, '').split('/')
+          const moduleName = (fileParts[0].match(/^@/)) ? `${fileParts[0]}/${fileParts[1]}` : fileParts[0]
+          return moduleName
+        })))
 
-        const nestedModules = Array.from(new Set(modules)).filter((el) => {
+        const modulesWithVersions = addDependancyVersions(modules, pkgData)
+
+        const nestedModules = modules.filter((el) => {
           // Remove direct dependencies (which should be listed in package.json)
-          return directDeps.indexOf(el) < 0;
+          return directDeps.indexOf(el) < 0
         })
-
-        // console.log('nestedModules', nestedModules)
         // console.log('directDeps', directDeps)
         functionDependancies = {
-          direct: directDeps,
-          nested: nestedModules
+          direct: addDependancyVersions(directDeps, pkgData),
+          nested: addDependancyVersions(nestedModules, pkgData),
         }
       }
     }
+
+    // Format function triggers
+    const removeList = ["resolvedMethod", "resolvedPath"]
+    const eventTriggers = new Set()
+    const functionEventTriggers = functionEvents.reduce((acc, event) => {
+      const triggers = Object.keys(event)
+      triggers.forEach((trigger) => {
+        eventTriggers.add(trigger)
+      })
+      return Array.from(eventTriggers)
+    }, []).filter((item) => {
+      return !removeList.includes(item)
+    })
 
     const finalFunctionData = {
       [`${functionName}`]: {
         name: getFunctionNameFromArn(liveFunctionData.OutputValue),
         arn: liveFunctionData.OutputValue,
         runtime: functionRuntime,
-        triggers: functionEvents.map((evt) => {
-          return Object.keys(evt)
-        }),
+        triggers: functionEventTriggers,
         dependancies: functionDependancies
       }
     }
@@ -265,8 +300,10 @@ function getFormattedData(yaml = {}, stackOutput) {
     return obj
   }, {
     urls: {
-      base: '',
-      baseRaw: '',
+      apiGateway: '',
+      apiGatewayBaseURL: '',
+      httpApi: '',
+      httpApiBaseURL: '',
       byPath: {},
       byFunction: {},
       byMethod: {}
@@ -278,6 +315,35 @@ function getFormattedData(yaml = {}, stackOutput) {
   })
 
   return manifestData
+}
+
+function upperCase(str) {
+  return str.toUpperCase()
+}
+
+function addDependancyVersions(array, pkgData) {
+  return array.map((name) => {
+    return pkgData[name]._from
+  })
+}
+
+function getApiBaseUrl(event, serviceInfo) {
+  if (event.http) {
+    return serviceInfo.urls['apiGateway'] || serviceInfo.urls['apiGatewayBaseURL']
+  }
+  return serviceInfo.urls['httpApi'] || serviceInfo.urls['httpApiBaseURL']
+}
+
+function isHttpTrigger(event) {
+  return event.http || event.httpApi
+}
+
+function formatURL(uri) {
+  return uri.replace(/\/$/, '')
+}
+
+function formatPath(uri) {
+  return `/${uri.replace(/^\//, '')}`
 }
 
 function hasCustomDomain(yaml = {}) {
@@ -298,7 +364,7 @@ function hasPlugin(plugins, name) {
 function getFunctionPath(functionData, yaml, directory) {
   const dir = directory || process.cwd()
   if (!functionData.handler) {
-    throw new Error('handler missing from function')
+    throw new Error(`Handler missing from function. ${JSON.stringify(functionData)}`)
   }
   const runtime = getFunctionRuntime(functionData, yaml)
 
@@ -314,14 +380,23 @@ function getFunctionPath(functionData, yaml, directory) {
   // Only match files that are relative
   }
   if (!fs.existsSync(fullFilePath)) {
-    throw new Error('File not found')
+    throw new Error(`File "${funcPath}" not found. ${fullFilePath} missing`)
   }
   return fullFilePath
 }
 
-function getApiBaseUrl(outputs) {
+function getRESTUrl(outputs) {
   return outputs.reduce((acc, curr) => {
     if (curr.OutputKey === 'ServiceEndpoint') {
+      return curr.OutputValue
+    }
+    return acc
+  }, '')
+}
+
+function getHTTPUrl(outputs) {
+  return outputs.reduce((acc, curr) => {
+    if (curr.OutputKey === 'HttpApiUrl') {
       return curr.OutputValue
     }
     return acc
@@ -355,7 +430,7 @@ function getFunctionData(functionName, outputs) {
   }
 
   return {
-    OutputKey: 'IdentifyLambdaFunctionQualifiedArn',
+    OutputKey: 'UnDeployedLambdaFunctionArn',
     OutputValue: 'Not deployed yet',
     Description: 'Draft Lambda function'
   }
