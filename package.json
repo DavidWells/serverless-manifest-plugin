@@ -21,6 +21,7 @@
   "dependencies": {
     "debug": "^4.1.1",
     "npm-packlist": "^1.4.1",
+    "parse-gitignore": "^1.0.1",
     "precinct": "^6.1.2",
     "read-pkg-up": "^5.0.0",
     "require-package-name": "^2.0.1",

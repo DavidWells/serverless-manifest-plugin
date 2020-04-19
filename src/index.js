@@ -1,8 +1,11 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
-const util = require('util')
-const { getDependencies, getShallowDeps } = require('./getDeps')
+const { promisify } = require('util')
+const readFile = promisify(fs.readFile)
+const writeFile = promisify(fs.writeFile)
+const { ensureGitIgnore } = require('./utils/gitignore')
+const { getDependencies, getShallowDeps } = require('./utils/getDeps')
 
 class ServerlessManifestPlugin {
   constructor(serverless, options) {
@@ -10,7 +13,7 @@ class ServerlessManifestPlugin {
     this.options = options
     this.commands = {
       manifest: {
-        usage: 'Generate a service manifest file',
+        usage: 'Generate a serverless service manifest file',
         lifecycleEvents: [
           'create'
         ],
@@ -19,10 +22,19 @@ class ServerlessManifestPlugin {
             usage: 'Output json only for programatic usage',
           },
           silent: {
-            usage: 'Stop console output after manifest created',
+            usage: 'Silence all console output during manifest creation',
           },
-          noSave: {
+          output: {
+            usage: 'Output path for serverless manifest file. Default /.serverless/manifest.json',
+            shortcut: 'o',
+          },
+          disableOutput: {
             usage: 'Disable manifest.json from being created',
+            shortcut: 'd',
+          },
+          postProcess: {
+            usage: 'Path to custom javascript function for additional processing',
+            shortcut: 'p',
           },
         },
       },
@@ -60,54 +72,99 @@ class ServerlessManifestPlugin {
         })
     })
   }
+  /* Runs after `serverless deploy` */
   async afterDeploy() {
-    // console.log('this runs after deploy')
-    // console.log('this runs after deploy')
+    const customOpts = getCustomSettings(this.serverless)
+    const outputInJson = customOpts.json || this.options.json
+    const disableFileOutput = customOpts.disableOutput || this.options.disableOutput
+    const silenceLogs = customOpts.silent || this.options.silent || outputInJson
+    const handlePostProcessing = customOpts.postProcess || this.options.postProcess
+    const customOutputPath = customOpts.output || this.options.output
+
+    if (!silenceLogs) {
+      console.log(`● Creating Serverless manifest...\n`)
+    }
+
+    if (disableFileOutput && !handlePostProcessing) {
+        console.log('No manifest data processed or saved. "disableOutput" is true & no "postProcess" option is set')
+        console.log(' Make sure you create a function to handle your manifest data')
+        console.log(' Example:')
+        console.log('  postProcess: ./my-file-to-process.js')
+      return false
+    }
+
+    /* Fetch live service data */
     const stageData = await this.getData()
 
-    // console.log('stageData', stageData)
     const cwd = process.cwd()
-    // console.log('stageData', stageData)
     const dotServerlessFolder = path.join(cwd, '.serverless')
-    const manifestPath = path.join(dotServerlessFolder, 'manifest.json')
+    const defaultManifestPath = path.join(dotServerlessFolder, 'manifest.json')
+
+    let manifestPath = path.join(dotServerlessFolder, 'manifest.json')
+    if (customOutputPath) {
+      manifestPath = path.resolve(customOutputPath)
+    }
+    // console.log('manifestPath', manifestPath)
+
     const currentManifest = getManifestData(manifestPath)
+    // console.log('currentManifest', currentManifest)
     // merge together values. TODO deep merge
     const manifestData = Object.assign({}, currentManifest, stageData)
     // console.log('manifestData', manifestData)
-    // write to config file
-    if (this.options.json) {
-      console.log(JSON.stringify(manifestData, null, 2))
-    }
-    if (this.options.noSave) {
-      return false
-    }
-    if (!this.options.silent && !this.options.json) {
-      console.log('Generating serverless manifest file...')
-      console.log()
-    }
-    saveManifest(manifestData, () => {
-      if (this.options.silent || this.options.json) {
-        return false
+    let finalManifest = manifestData
+
+    /* Allow for custom postprocessing of manifest data */
+    if (handlePostProcessing) {
+      try {
+        finalManifest = await runPostManifest(handlePostProcessing, manifestData, {
+          disableLogs: silenceLogs
+        })
+      } catch (err) {
+        console.log('Error in manifest postProcess...')
+        throw err
       }
-      console.log(`Complete! Serverless manifest saved to:\n${manifestPath}`)
-    })
+    }
+
+    /* Write to output file */
+    if (!disableFileOutput) {
+      try {
+        if (!silenceLogs) {
+          console.log('● Saving Serverless manifest file...\n')
+        }
+        await saveManifest(manifestData, manifestPath)
+        if (!silenceLogs) {
+          console.log(`✓ Save manifest complete`)
+          console.log(` Output path: ${manifestPath.replace(cwd, '')}`)
+          console.log(` Full path:   ${manifestPath}`)
+        }
+      } catch(err) {
+        console.log('Error during serverless manifest saving...')
+        throw err
+      }
+    }
+
+    // Output JSON for further processing with jq
+    if (outputInJson) {
+      console.log(JSON.stringify(finalManifest, null, 2))
+    }
   }
-  // https://github.com/dittto/serverless-shared-vars/blob/master/index.js#L15-L21
 }
 
-function saveManifest(manifestData, callback) {
+async function saveManifest(manifestData, manifestPath) {
   const cwd = process.cwd()
-  const dotServerlessFolder = path.join(cwd, '.serverless')
-
-  const manifestPath = path.join(dotServerlessFolder, 'manifest.json')
-  if (!fsExistsSync(dotServerlessFolder)) {
-    fs.mkdirSync(dotServerlessFolder)
+  const parentDir = path.dirname(manifestPath)
+  if (!fsExistsSync(parentDir)) {
+    fs.mkdirSync(parentDir)
   }
   const data = JSON.stringify(manifestData, null, 2)
   fs.writeFileSync(manifestPath, data)
-  if (callback) {
-    callback()
-  }
+  // Ensure git ignore added
+  await ensureGitIgnore(cwd)
+}
+
+function getCustomSettings(serverless) {
+  const { service } = serverless || {}
+  return service && service.custom && service.custom.manifest || {}
 }
 
 function getManifestData(filePath) {
@@ -116,9 +173,9 @@ function getManifestData(filePath) {
     if (configValues) {
       return JSON.parse(configValues)
     }
-    // else return empty object
-    return {}
   }
+  // else return empty object
+  return {}
 }
 
 function getFormattedData(yaml = {}, stackOutput) {
@@ -317,8 +374,60 @@ function getFormattedData(yaml = {}, stackOutput) {
   return manifestData
 }
 
+async function runPostManifest(filePath, manifestData, opts = {}) {
+  const { disableLogs } = opts
+  const realPath = path.resolve(filePath)
+  const fileContents = fs.readFileSync(realPath, 'utf-8')
+  const fileDirectory = path.dirname(realPath)
+  const fileType = path.extname(realPath)
+  let jsFile
+  let returnValue = manifestData
+  let originalConsoleLog = console.log
+  if (disableLogs) {
+    // disable logging in postProcess file
+    console.log = () => {}
+  }
+  try {
+    jsFile = require(realPath)
+    if (jsFile && typeof jsFile === 'function') {
+      console.log(`● Running Serverless manifest postProcessing from "${filePath}"...\n`)
+      const value = await jsFile(manifestData)
+      console.log()
+      if (value && isObject(value)) {
+        returnValue = value
+      }
+      console.log(`✓ PostProcessing complete\n`)
+      if (disableLogs) {
+        // restore logging
+        console.log = originalConsoleLog
+      }
+    } else {
+      throw new Error(`${realPath} must export a default function for manifest post processing`)
+    }
+  } catch (err) {
+    if (disableLogs) {
+      // restore logging
+      console.log = originalConsoleLog
+    }
+    throw new Error(err)
+  }
+  return returnValue
+}
+
 function upperCase(str) {
   return str.toUpperCase()
+}
+
+// is plain object
+function isObject(obj) {
+  if (typeof obj !== 'object' || obj === null) return false
+
+  let proto = obj
+  while (Object.getPrototypeOf(proto) !== null) {
+    proto = Object.getPrototypeOf(proto)
+  }
+
+  return Object.getPrototypeOf(obj) === proto
 }
 
 // Add dependency versions to package names
