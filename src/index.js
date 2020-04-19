@@ -215,14 +215,15 @@ function getFormattedData(yaml = {}, stackOutput) {
         const httpEvent = isHttpTrigger(event)
         if (httpEvent) {
           const URI = getApiBaseUrl(event, obj)
-          const value = obj.urls['byMethod'][`${upperCase(httpEvent.method)}`]
+          const METHOD = upperCase(httpEvent.method)
+          const value = obj.urls['byMethod'][`${METHOD}`]
           const httpPath = formatPath(httpEvent.path)
           const url = `${formatURL(URI)}${httpPath}`
           let urls = [url]
           if (value && value.length) {
             urls = value.concat(url)
           }
-          acc[`${httpEvent.method}`] = urls
+          acc[`${METHOD}`] = urls
         }
         return acc
       }, {})
