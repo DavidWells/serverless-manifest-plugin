@@ -85,7 +85,7 @@ function parse(input, fn) {
 
 async function ensureGitIgnore(dir) {
   const gitIgnorePath = path.join(dir, '.gitignore')
-  const ignoreContent = '# Ignore serverless manifest data\n.serverless.manifest.json\n.serverless/.manifest.json'
+  const ignoreContent = '# Ignore serverless manifest files\nserverless.manifest.json\n.serverless/manifest.json'
 
   /* No .gitignore file. Create one and ignore .serverless/manifest.json && serverless.manifest.json folder */
   if (!(await hasGitIgnore(dir))) {
