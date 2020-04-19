@@ -15,23 +15,52 @@ plugins:
  - serverless-manifest-plugin
 ```
 
-### Generating a manifest file
+Then run `serverless manifest --help` to see all options.
 
-The plugin will automatically create the manifest when you run `sls deploy`
+### Options
 
+You can set options via CLI flags or via the `custom` field in `serverless.yml`
 
-You can also manually generate the manifest at anytime with
+```yml
+# Custom settings for manifest plugin
+custom:
+  manifest:
+    # Custom manifest output path. Default ./.serverless/manifest.json
+    output: ./serverless.manifest.json
+    # set to true to disable manifest file from being created
+    disableOutput: false
+    # Path to custom file with JS function for additional post processing
+    postProcess: ./my-file-to-process-manifest-data.js
+    # Set plugin log output to silent. Default false
+    silent: false
 
-```
-sls manfifest
+plugins:
+ - serverless-manifest-plugin
 ```
 
 ### Programatic usage
 
-Using the `json` flag will pipe the `stdout` of the manifest. You can use this with a tool like [`jq`](https://stedolan.github.io/jq/) to do something programatic with the data.
+Using the `json` flag will pipe the service manifest to `stdout`. You can use this with a tool like [`jq`](https://stedolan.github.io/jq/) to do something programatic with the data.
 
 ```
-sls manfifest --json
+serverless manifest --json
+```
+
+Example:
+
+```
+serverless manifest --json | jq '.dev.functions'
+# Outputs service function info
+```
+
+### Generating a manifest file
+
+The plugin will automatically create the manifest when you run `serverless deploy`
+
+You can also manually generate the manifest at anytime with
+
+```
+serverless manifest
 ```
 
 ## Example
