@@ -1,6 +1,6 @@
 # Serverless Manifest Plugin
 
-Generate list of api endpoints, function information & stack outputs to a service manifest file. This is useful for consuming stack values in other applications and for service discovery.
+Generate a list of API endpoints, function information & stack outputs to a service manifest file. This is useful for consuming stack values in other applications and for service discovery.
 
 After `serverless deploy` finishes, a `.serverless/manifest.json` file, is created.
 

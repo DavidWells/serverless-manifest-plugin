@@ -137,7 +137,7 @@ class ServerlessManifestPlugin {
           console.log(` Output path: ${manifestPath.replace(cwd, '')}`)
           console.log(` Full path:   ${manifestPath}`)
         }
-      } catch(err) {
+      } catch (err) {
         console.log('Error during serverless manifest saving...')
         throw err
       }
