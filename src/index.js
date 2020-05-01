@@ -39,19 +39,25 @@ class ServerlessManifestPlugin {
         },
       },
     }
+
+
+
     this.hooks = {
-      // expose manifest command
-      'manifest:create': this.afterDeploy.bind(this),
-      // create after function deploy
-      // 'after:deploy:function:deploy': this.afterDeploy.bind(this),
-      // create after deploy
-      'after:deploy:finalize': this.afterDeploy.bind(this),
-      // Add special output here
-      'after:info:info': this.runInfo.bind(this),
+      /* expose `sls manifest` command */
+      'manifest:create': this.generateManifest.bind(this),
+      /* TODO Add special output here */
+      // 'after:info:info': this.runInfo.bind(this),
+    }
+    const { disablePostDeployGeneration } = getCustomSettings(this.serverless)
+    if (!disablePostDeployGeneration) {
+      /* create manifest after deploy */
+      this.hooks['after:deploy:finalize'] = this.generateManifest.bind(this)
+      /* create manifest after single function deploy */
+      // this.hooks['after:deploy:function:deploy'] = this.generateManifest.bind(this)
     }
   }
   runInfo() {
-    // console.log('woowowowoow')
+    // TODO
   }
   getData() {
     var name = this.serverless.service.getServiceName()
@@ -73,7 +79,7 @@ class ServerlessManifestPlugin {
     })
   }
   /* Runs after `serverless deploy` */
-  async afterDeploy() {
+  async generateManifest() {
     const customOpts = getCustomSettings(this.serverless)
     const outputInJson = customOpts.json || this.options.json
     const disableFileOutput = customOpts.disableOutput || this.options.disableOutput
