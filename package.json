@@ -1,6 +1,6 @@
 {
   "name": "serverless-manifest-plugin",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Output api endpoints and resource values for consumption",
   "main": "src/index.js",
   "scripts": {
