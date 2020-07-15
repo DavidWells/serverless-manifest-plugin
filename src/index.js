@@ -214,7 +214,7 @@ function getFormattedData(yaml = {}, stackOutput) {
       const httpAPIBaseURL = getHTTPUrl(stackOutput.Outputs)
       if (domainInfo) {
         const customBasePath = domainInfo.basePath || ''
-        obj.urls['apiGateway'] = `https://${domainInfo.domainName}/${customBasePath}`
+        obj.urls['apiGateway'] = formatURL(`https://${domainInfo.domainName}/${customBasePath}`)
       } else {
         obj.urls['apiGateway'] = restAPIBaseURL
       }
@@ -467,9 +467,25 @@ function formatPath(uri) {
   return `/${uri.replace(/^\//, '')}`
 }
 
+function evaluateEnabled(enabled) {
+  if (enabled === undefined) {
+    return true;
+  }
+  if (typeof enabled === "boolean") {
+    return enabled;
+  } else if (typeof enabled === "string" && enabled === "true") {
+    return true;
+  } else if (typeof enabled === "string" && enabled === "false") {
+    return false;
+  }
+  return false
+}
+
 function hasCustomDomain(yaml = {}) {
   const { plugins, custom } = yaml
-  if (hasPlugin(plugins, 'serverless-domain-manager') && custom && custom.customDomain && custom.customDomain.domainName) {
+  const customDomainEnabled = evaluateEnabled(custom.customDomain.enabled)
+  if (hasPlugin(plugins, 'serverless-domain-manager') &&
+      custom && custom.customDomain && custom.customDomain.domainName && customDomainEnabled) {
     return custom.customDomain
   }
   return false
