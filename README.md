@@ -70,6 +70,8 @@ You can also manually generate the manifest at anytime with
 serverless manifest
 ```
 
+Additionally `sls deploy --noDeploy` will also generate a manifest file.
+
 ## Example
 
 Outputs `urls`, `functions`, `outputs` etc.
