@@ -483,9 +483,9 @@ function evaluateEnabled(enabled) {
 
 function hasCustomDomain(yaml = {}) {
   const { plugins, custom } = yaml
-  const customDomainEnabled = evaluateEnabled(custom.customDomain.enabled)
   if (hasPlugin(plugins, 'serverless-domain-manager') &&
-      custom && custom.customDomain && custom.customDomain.domainName && customDomainEnabled) {
+      custom && custom.customDomain && custom.customDomain.domainName &&
+      evaluateEnabled(custom.customDomain.enabled)) {
     return custom.customDomain
   }
   return false
