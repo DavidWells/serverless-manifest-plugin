@@ -40,6 +40,8 @@ custom:
     postProcess: ./my-file-to-process-manifest-data.js
     # Set plugin log output to silent. Default false
     silent: false
+    # Path to the function code. Default serverless.yml location (process.cwd())
+    srcPath: ./dist
 
 plugins:
  - serverless-manifest-plugin
