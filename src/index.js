@@ -19,7 +19,7 @@ class ServerlessManifestPlugin {
         ],
         options: {
           json: {
-            usage: 'Output json only for programatic usage',
+            usage: 'Output json only for programmatic usage',
           },
           silent: {
             usage: 'Silence all console output during manifest creation',
@@ -36,6 +36,10 @@ class ServerlessManifestPlugin {
             usage: 'Path to custom javascript function for additional processing',
             shortcut: 'p',
           },
+          location:{
+            usage: 'Path to serverless root.  Default process.cwd()',
+            shortcut: 'l'
+          }
         },
       },
     }
@@ -59,7 +63,14 @@ class ServerlessManifestPlugin {
   runInfo() {
     // TODO
   }
-  getData() {
+
+  /**
+   * Retrieves the data from a given serverless configuration
+   *
+   * @param {string} srcPath - The path to the function code
+   * @returns {Promise<unknown>}
+   */
+  getData(srcPath) {
     var name = this.serverless.service.getServiceName()
     var provider = this.serverless.getProvider('aws')
     var stage = provider.getStage()
@@ -71,7 +82,7 @@ class ServerlessManifestPlugin {
       provider.request('CloudFormation', 'describeStacks', params, stage, region)
         .then((data) => {
           var stack = data.Stacks.pop() || { Outputs: [] }
-          var manifestData = getFormattedData(this.serverless.service, stack)
+          var manifestData = getFormattedData(this.serverless.service, stack, srcPath)
           var stageData = {}
           stageData[stage] = manifestData
           resolve(stageData)
@@ -86,6 +97,10 @@ class ServerlessManifestPlugin {
     const silenceLogs = customOpts.silent || this.options.silent || outputInJson
     const handlePostProcessing = customOpts.postProcess || this.options.postProcess
     const customOutputPath = customOpts.output || this.options.output
+    /*
+    Allows for customising where the manifest looks for function code
+     */
+    const srcPath = customOpts.srcPath || this.options.srcPath || process.cwd()
 
     if (!silenceLogs) {
       console.log(`● Creating Serverless manifest...\n`)
@@ -100,9 +115,9 @@ class ServerlessManifestPlugin {
     }
 
     /* Fetch live service data */
-    const stageData = await this.getData()
+    const stageData = await this.getData(srcPath)
 
-    const cwd = process.cwd()
+    const cwd = srcPath
     const dotServerlessFolder = path.join(cwd, '.serverless')
     const defaultManifestPath = path.join(dotServerlessFolder, 'manifest.json')
 
@@ -184,7 +199,7 @@ function getManifestData(filePath) {
   return {}
 }
 
-function getFormattedData(yaml = {}, stackOutput) {
+function getFormattedData(yaml = {}, stackOutput, srcDir) {
   let resources = {}
   if (yaml.resources && yaml.resources.Resources) {
     resources = yaml.resources.Resources
@@ -299,7 +314,7 @@ function getFormattedData(yaml = {}, stackOutput) {
       // console.log('functionRuntime', functionRuntime)
 
       if (functionRuntime.match(/nodejs/)) {
-        const functionPath = getFunctionPath(functionData, yaml)
+        const functionPath = getFunctionPath(functionData, yaml, srcDir)
         const functionContent = fs.readFileSync(functionPath, 'utf8')
 
         const directDeps = getShallowDeps(functionContent)
