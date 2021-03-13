@@ -210,8 +210,19 @@ function getFormattedData(yaml = {}, stackOutput, srcDir) {
     outputs = yaml.resources.Outputs
   }
 
+  // does serverless.yml have package: individually: true ?
+  let individuallyPackaged = false
+  if (yaml.hasOwnProperty('package')) {
+    const package = yaml.package
+    if (package.hasOwnProperty('individually'))
+      individuallyPackaged = true
+  }
+
   const manifestData = Object.keys(yaml.functions).reduce((obj, functionName) => {
-    const functionData = yaml.functions[functionName]
+    const functionData = {
+      ...yaml.functions[functionName],
+      name: functionName, // adding function name for integrating in src function fullpath when individually packaged
+    }
     const functionRuntime = getFunctionRuntime(functionData, yaml)
     const liveFunctionData = getFunctionData(functionName, stackOutput.Outputs)
 
@@ -314,7 +325,8 @@ function getFormattedData(yaml = {}, stackOutput, srcDir) {
       // console.log('functionRuntime', functionRuntime)
 
       if (functionRuntime.match(/nodejs/)) {
-        const functionPath = getFunctionPath(functionData, yaml, srcDir)
+        // we need to pass if functions are individually packaged or not
+        const functionPath = getFunctionPath(functionData, yaml, srcDir, individuallyPackaged)
         const functionContent = fs.readFileSync(functionPath, 'utf8')
 
         const directDeps = getShallowDeps(functionContent)
@@ -513,7 +525,8 @@ function hasPlugin(plugins, name) {
   return plugins.includes(name)
 }
 
-function getFunctionPath(functionData, yaml, directory) {
+// added parameter
+function getFunctionPath(functionData, yaml, directory, individuallyPackaged = false) {
   const dir = directory || process.cwd()
   if (!functionData.handler) {
     throw new Error(`Handler missing from function. ${JSON.stringify(functionData)}`)
@@ -525,7 +538,16 @@ function getFunctionPath(functionData, yaml, directory) {
   // todo support other langs ^
   const funcPath = `${functionData.handler.split('.').slice(0, -1).join('.')}${extension}`
   const relativePath = funcPath.replace('~', os.homedir())
-  let fullFilePath = (path.isAbsolute(relativePath) ? relativePath : path.join(dir, relativePath))
+  let fullFilePath = ''
+  if (individuallyPackaged) {
+    console.log('Functions individually packaged, adapting full file path')
+    fullFilePath = (path.isAbsolute(relativePath) ? relativePath : path.join(dir, functionData.name, relativePath))
+  }
+  else {
+    // we need to add "/service/" if not individually packaged
+    fullFilePath = (path.isAbsolute(relativePath) ? relativePath : path.join(dir, 'service', relativePath))
+  }
+
   if (fs.existsSync(fullFilePath)) {
     // Get real path to handle potential symlinks (but don't fatal error)
     fullFilePath = fs.realpathSync(fullFilePath)
