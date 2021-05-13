@@ -57,7 +57,7 @@ function getDependencies(filename, basedir) {
         basedir
       })
       const pkg = readPkgUp.sync({ cwd: pathToModule })
-
+      // console.log('pkg', pkg)
       if (pkg) {
         modulesToProcess.push(pkg)
       }
@@ -110,7 +110,7 @@ Please ensure "${moduleName}" is installed in the project.`)
   while (modulesToProcess.length) {
     const currentModule = modulesToProcess.pop()
     const currentModulePath = path.join(currentModule.path, '..')
-    const packageJson = currentModule.pkg
+    const packageJson = currentModule.packageJson
 
     if (modulePaths.has(currentModulePath)) {
       continue
