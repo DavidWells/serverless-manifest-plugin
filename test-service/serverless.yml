@@ -1,0 +1,31 @@
+service: test-service-for-manifest-plugin
+
+plugins:
+  # include local plugin
+  - ../src
+  # - serverless-manifest-plugin
+
+provider:
+  name: aws
+  runtime: nodejs14.x
+
+functions:
+  hello:
+    handler: hello.hello
+    events:
+      - http:
+          path: users/create
+          method: get
+  bye:
+    handler: bye.bye
+    events:
+      - httpApi:
+          path: /bye
+          method: get
+
+# you can add CloudFormation resource templates here
+resources:
+  Outputs:
+    NewOutput:
+      Description: "Description for the output"
+      Value: "Some output value"
