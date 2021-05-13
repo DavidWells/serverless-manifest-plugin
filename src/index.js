@@ -44,8 +44,6 @@ class ServerlessManifestPlugin {
       },
     }
 
-
-
     this.hooks = {
       /* expose `sls manifest` command */
       'manifest:create': this.generateManifest.bind(this),
