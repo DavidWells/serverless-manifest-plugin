@@ -20,25 +20,31 @@ class ServerlessManifestPlugin {
         options: {
           json: {
             usage: 'Output json only for programmatic usage',
+            type: 'boolean',
           },
           silent: {
             usage: 'Silence all console output during manifest creation',
+            type: 'boolean',
           },
           output: {
             usage: 'Output path for serverless manifest file. Default /.serverless/manifest.json',
             shortcut: 'o',
+            type: 'string',
           },
           disableOutput: {
             usage: 'Disable manifest.json from being created',
             shortcut: 'd',
+            type: 'boolean',
           },
           postProcess: {
             usage: 'Path to custom javascript function for additional processing',
             shortcut: 'p',
+            type: 'string',
           },
           location:{
             usage: 'Path to serverless root.  Default process.cwd()',
-            shortcut: 'l'
+            shortcut: 'l',
+            type: 'string',
           }
         },
       },
