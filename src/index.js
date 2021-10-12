@@ -545,11 +545,11 @@ function getFunctionPath(functionData, yaml, directory, functionName) {
 function getFunctionBaseDir(directory, yaml, functionName) {
   // use case 1: serverless-webpack plugin
   if ((yaml.plugins || []).indexOf('serverless-webpack') > -1) {
-    const oneLevelUp = yaml.package && yaml.package.individually === true ? functionName: 'service';
-    directory = path.join(directory, oneLevelUp);
+    const chain = yaml.package && yaml.package.individually === true ? functionName : 'service'
+    directory = path.join(directory, chain)
   }
 
-  return directory;
+  return directory
 }
 
 function getRESTUrl(outputs) {
