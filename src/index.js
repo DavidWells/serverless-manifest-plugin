@@ -318,7 +318,7 @@ function getFormattedData(yaml = {}, stackOutput, srcDir) {
       // console.log('functionRuntime', functionRuntime)
 
       if (functionRuntime.match(/nodejs/)) {
-        const functionPath = getFunctionPath(functionData, yaml, srcDir)
+        const functionPath = getFunctionPath(functionData, yaml, srcDir, functionName)
         const functionContent = fs.readFileSync(functionPath, 'utf8')
 
         const directDeps = getShallowDeps(functionContent)
@@ -517,8 +517,8 @@ function hasPlugin(plugins, name) {
   return plugins.includes(name)
 }
 
-function getFunctionPath(functionData, yaml, directory) {
-  const dir = directory || process.cwd()
+function getFunctionPath(functionData, yaml, directory, functionName) {
+  const funcBaseDir = getFunctionBaseDir(directory, yaml, functionName)
   if (!functionData.handler) {
     throw new Error(`Handler missing from function. ${JSON.stringify(functionData)}`)
   }
@@ -529,7 +529,7 @@ function getFunctionPath(functionData, yaml, directory) {
   // todo support other langs ^
   const funcPath = `${functionData.handler.split('.').slice(0, -1).join('.')}${extension}`
   const relativePath = funcPath.replace('~', os.homedir())
-  let fullFilePath = (path.isAbsolute(relativePath) ? relativePath : path.join(dir, relativePath))
+  let fullFilePath = (path.isAbsolute(relativePath) ? relativePath : path.join(funcBaseDir, relativePath))
   if (fs.existsSync(fullFilePath)) {
     // Get real path to handle potential symlinks (but don't fatal error)
     fullFilePath = fs.realpathSync(fullFilePath)
@@ -539,6 +539,17 @@ function getFunctionPath(functionData, yaml, directory) {
     throw new Error(`File "${funcPath}" not found. ${fullFilePath} missing`)
   }
   return fullFilePath
+}
+
+// support for different packaging strategies
+function getFunctionBaseDir(directory, yaml, functionName) {
+  // use case 1: serverless-webpack plugin
+  if ((yaml.plugins || []).indexOf('serverless-webpack') > -1) {
+    const oneLevelUp = yaml.package && yaml.package.individually === true ? functionName: 'service';
+    directory = path.join(directory, oneLevelUp);
+  }
+
+  return directory;
 }
 
 function getRESTUrl(outputs) {
