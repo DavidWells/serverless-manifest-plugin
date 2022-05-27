@@ -578,7 +578,7 @@ function getFunctionRuntimeExtension(runtime) {
 // ZazLambdaFunctionQualifiedArn
 function getFunctionData(functionName, outputs) {
   const liveFunctionData = outputs.filter((out) => {
-    return `${jsUcfirst(functionName)}` === out.OutputKey.replace('LambdaFunctionQualifiedArn', '')
+    return `${convertFunctionNameToQualifiedArnOutputKey(functionName)}` === out.OutputKey
   })
 
   if (liveFunctionData && liveFunctionData.length) {
@@ -596,8 +596,10 @@ function getFunctionNameFromArn(arn) {
   return arn.split(':')[6]
 }
 
-function jsUcfirst(string) {
-  return string.charAt(0).toUpperCase() + string.slice(1)
+function convertFunctionNameToQualifiedArnOutputKey(string) {
+  var converted = string.charAt(0).toUpperCase() + string.slice(1);
+  converted = converted.replaceAll("_", "Underscore");
+  return converted + "LambdaFunctionQualifiedArn";
 }
 
 function fsExistsSync(myDir) {
