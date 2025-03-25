@@ -2,8 +2,6 @@
 node_modules
 jspm_packages
 
-# Serverless directories
-.serverless
 # Ignore serverless manifest files
-serverless.manifest.json
 .serverless/manifest.json
+.serverless/manifests/**

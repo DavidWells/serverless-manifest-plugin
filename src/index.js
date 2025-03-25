@@ -519,11 +519,11 @@ class ServerlessManifestPlugin {
       const deploymentMetadata = {
         stackName: stackName,
         description: stackDescription,
-        lastUpdatedTime: stackLastUpdatedTime,
-        consoleUrl: stackConsoleUrl,
-        file: relativeManifestPath,
         region: region,
-        account: accountId || ''
+        account: accountId || '',
+        lastUpdatedTime: stackLastUpdatedTime,
+        file: relativeManifestPath,
+        consoleUrl: stackConsoleUrl,
       }
       
       // Add to byStage with enhanced metadata
@@ -572,7 +572,7 @@ class ServerlessManifestPlugin {
         // Create an ordered manifest with metadata updated
         const orderedManifest = {
           metadata: mainManifest.metadata || {
-            lastUpdated: new Date().toISOString()
+            manifestUpdated: new Date().toISOString()
           },
           byStage: mainManifest.byStage || {},
           byRegion: mainManifest.byRegion || {},
@@ -581,7 +581,7 @@ class ServerlessManifestPlugin {
         }
         
         // Update the lastUpdated timestamp
-        orderedManifest.metadata.lastUpdated = new Date().toISOString();
+        orderedManifest.metadata.manifestUpdated = new Date().toISOString();
         
         fs.writeFileSync(mainManifestPath, JSON.stringify(orderedManifest, null, 2))
         this.serverless.cli.log(` Index path: ${mainManifestPath}`)
@@ -783,7 +783,7 @@ class ServerlessManifestPlugin {
             // Create an ordered manifest with metadata updated
             const orderedManifest = {
               metadata: mainManifest.metadata || {
-                lastUpdated: new Date().toISOString()
+                manifestUpdated: new Date().toISOString()
               },
               byStage: mainManifest.byStage || {},
               byRegion: mainManifest.byRegion || {},
@@ -792,7 +792,7 @@ class ServerlessManifestPlugin {
             }
             
             // Update the lastUpdated timestamp
-            orderedManifest.metadata.lastUpdated = new Date().toISOString();
+            orderedManifest.metadata.manifestUpdated = new Date().toISOString();
             
             fs.writeFileSync(mainManifestPath, JSON.stringify(orderedManifest, null, 2))
             this.serverless.cli.log(`Main manifest index updated at: ${mainManifestPath}`)
@@ -1194,7 +1194,7 @@ function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, region
     return obj
   }, {
     metadata: {
-      lastUpdated: new Date().toISOString(),
+      manifestUpdated: new Date().toISOString(),
       region: region || '', // Add region as a top-level key
       accountId: accountId || '', // Add account ID as a top-level key right after region (always a string)
       stack: {
