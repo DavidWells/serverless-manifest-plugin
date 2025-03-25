@@ -6,11 +6,16 @@ const readFile = promisify(fs.readFile)
 const writeFile = promisify(fs.writeFile)
 const { ensureGitIgnore } = require('./utils/gitignore')
 const { getDependencies, getShallowDeps } = require('./utils/getDeps')
+const { getCloudFormationConsoleUrl } = require('./utils/cloudformation-url')
+const { fsExistsSync } = require('./utils/fs')
 
 class ServerlessManifestPlugin {
   constructor(serverless, options) {
     this.serverless = serverless
     this.options = options
+    this.provider = this.serverless.getProvider('aws')
+    this.service = this.serverless.service
+    this.stage = this.options.stage || this.service.provider.stage || 'dev'
     this.commands = {
       manifest: {
         usage: 'Generate a serverless service manifest file',
@@ -27,7 +32,7 @@ class ServerlessManifestPlugin {
             type: 'boolean',
           },
           output: {
-            usage: 'Output path for serverless manifest file. Default /.serverless/manifest.json',
+            usage: 'Output path for serverless manifest file. Default /.serverless/manifests/manifest.[stage].json',
             shortcut: 'o',
             type: 'string',
           },
@@ -50,9 +55,17 @@ class ServerlessManifestPlugin {
       },
     }
 
+    // Use manifests directory
+    this.manifestFileName = `manifest.${this.stage}.json`
+    this.manifestsDir = 'manifests'
+
     this.hooks = {
       /* expose `sls manifest` command */
       'manifest:create': this.generateManifest.bind(this),
+      'after:deploy:deploy': this.afterDeploy.bind(this),
+      'before:remove:remove': this.beforeRemove.bind(this),
+      'manifest:generate': this.generate.bind(this),
+      'manifest:clean': this.clean.bind(this),
       /* TODO Add special output here */
       // 'after:info:info': this.runInfo.bind(this),
     }
@@ -60,8 +73,32 @@ class ServerlessManifestPlugin {
     if (!disablePostDeployGeneration) {
       /* create manifest after deploy */
       this.hooks['after:deploy:finalize'] = this.generateManifest.bind(this)
+      // 'aws:common:cleanupTempDir': () => {
+      //   serverless.cli.log('disabled aws:common:cleanupTempDir')
+      //   return Promise.resolve()
+      // },
+      // 'aws:common:cleanupTempDir:cleanup': () => {
+      //   serverless.cli.log('disabled aws:common:cleanupTempDir:cleanup')
+      //   return Promise.resolve()
+      // },
+      // 'aws:deploy:finalize:cleanup': () => {
+      //   serverless.cli.log('disabled aws:deploy:finalize:cleanup')
+      //   return Promise.resolve()
+      // }
       /* create manifest after single function deploy */
       // this.hooks['after:deploy:function:deploy'] = this.generateManifest.bind(this)
+    }
+
+    // Store original spawn function
+    const originalSpawn = this.serverless.pluginManager.spawn
+    // Override spawn to intercept cleanupTempDir calls
+    this.serverless.pluginManager.spawn = function(hookName) {
+      if (hookName === 'aws:common:cleanupTempDir') {
+        serverless.cli.log('Manifest plugin disabled aws:common:cleanupTempDir')
+        return Promise.resolve()
+      }
+      // Call original spawn for other hooks
+      return originalSpawn.apply(this, arguments)
     }
   }
   runInfo() {
@@ -74,7 +111,7 @@ class ServerlessManifestPlugin {
    * @param {string} srcPath - The path to the function code
    * @returns {Promise<unknown>}
    */
-  getData(srcPath) {
+  getData(srcPath, cfTemplateData) {
     var name = this.serverless.service.getServiceName()
     var provider = this.serverless.getProvider('aws')
     var stage = provider.getStage()
@@ -82,16 +119,107 @@ class ServerlessManifestPlugin {
     var stackName = provider.naming.getStackName()
     var params = { StackName: `${stackName}` }
 
-    return new Promise((resolve, reject) => {
-      provider.request('CloudFormation', 'describeStacks', params, stage, region)
-        .then((data) => {
-          var stack = data.Stacks.pop() || { Outputs: [] }
-          var manifestData = getFormattedData(this.serverless.service, stack, srcPath)
-          var stageData = {}
-          stageData[stage] = manifestData
-          resolve(stageData)
-        })
-    })
+    // Extract account ID from provider info if available
+    var accountId = ''
+    
+    return (async () => {
+      // Try to get account ID if available through the provider
+      if (provider.getAccountId) {
+        try {
+          // Handle case when getAccountId returns a Promise
+          const accountIdResult = provider.getAccountId()
+          if (accountIdResult && typeof accountIdResult.then === 'function') {
+            try {
+              accountId = await accountIdResult
+            } catch (e) {
+              this.serverless.cli.log(`Warning: Could not retrieve AWS account ID from Promise: ${e.message}`)
+              accountId = ''
+            }
+          } else {
+            accountId = accountIdResult
+          }
+          
+          // Ensure accountId is a string
+          if (accountId && typeof accountId !== 'string') {
+            accountId = String(accountId)
+          }
+        } catch (e) {
+          this.serverless.cli.log(`Warning: Could not retrieve AWS account ID: ${e.message}`)
+        }
+      }
+      
+      // If accountId is empty or an object, reset it
+      if (!accountId || typeof accountId === 'object') {
+        accountId = ''
+      }
+      
+      try {
+        const data = await provider.request('CloudFormation', 'describeStacks', params, stage, region)
+        var stack = data.Stacks.pop() || { Outputs: [] }
+        
+        // Extract accountId from stack ARN if not already available
+        if ((!accountId || accountId === '') && stack.StackId) {
+          const arnParts = stack.StackId.split(':')
+          if (arnParts.length >= 5) {
+            accountId = arnParts[4]
+          }
+        }
+        
+        // Ensure accountId is a string and not an object
+        if (accountId && typeof accountId !== 'string') {
+          accountId = String(accountId)
+        }
+        
+        // If accountId is an object or empty, set it to empty string
+        if (!accountId || typeof accountId === 'object') {
+          accountId = ''
+        }
+        
+        // Pass the full stack ID to getFormattedData
+        const manifestData = getFormattedData(
+          this.serverless.service, 
+          stack, 
+          srcPath, 
+          cfTemplateData, 
+          region, 
+          accountId, 
+          stack.StackId
+        )
+        
+        // We'll still return a stage-keyed object for internal use
+        // but we'll extract it in generateManifest before writing to file
+        var stageData = {}
+        stageData[stage] = manifestData
+        return stageData
+      } catch (err) {
+        this.serverless.cli.log(`Error fetching CloudFormation data: ${err.message}`)
+        // Return empty data on error to allow continued operation
+        var stageData = {}
+        stageData[stage] = {
+          metadata: {
+            lastUpdated: new Date().toISOString(),
+            stack: {
+              name: stackName || '',
+              stackId: stack.StackId || '',
+              status: '',
+              description: '',
+              creationTime: '',
+              lastUpdatedTime: '',
+              tags: [],
+              terminationProtection: false,
+              consoleUrl: getCloudFormationConsoleUrl(region, stack.StackId)
+            }
+          },
+          region: region,
+          accountId: '', // Always set accountId as empty string on error
+          urls: {},
+          functions: {},
+          outputs: [],
+          endpoints: {}
+        }
+        return stageData
+      }
+    })()
   }
   /* Runs after `serverless deploy` */
   async generateManifest() {
@@ -102,12 +230,12 @@ class ServerlessManifestPlugin {
     const handlePostProcessing = customOpts.postProcess || this.options.postProcess
     const customOutputPath = customOpts.output || this.options.output
     /*
-    Allows for customising where the manifest looks for function code
-     */
+    Allows for customizing where the manifest looks for function code
+    */
     const srcPath = customOpts.srcPath || this.options.srcPath || process.cwd()
 
     if (!silenceLogs) {
-      console.log(`● Creating Serverless manifest...\n`)
+      console.log(`● Creating Serverless manifest for stage "${this.stage}"...\n`)
     }
 
     if (disableFileOutput && !handlePostProcessing) {
@@ -118,23 +246,51 @@ class ServerlessManifestPlugin {
       return false
     }
 
+
+    let cfTemplateData = {}
+    try {
+      const cfTemplate = fs.readFileSync(
+        path.join(srcPath, '.serverless/cloudformation-template-update-stack.json'), 
+        'utf8'
+      )
+      cfTemplateData = JSON.parse(cfTemplate)
+    } catch (err) {
+      
+    }
+
     /* Fetch live service data */
-    const stageData = await this.getData(srcPath)
+    const stageData = await this.getData(srcPath, cfTemplateData)
+    
+    // Extract the current stage data directly without the stage wrapper
+    const currentStageData = stageData[this.stage] || {}
 
     const cwd = srcPath
     const dotServerlessFolder = path.join(cwd, '.serverless')
-    const defaultManifestPath = path.join(dotServerlessFolder, 'manifest.json')
-
-    let manifestPath = path.join(dotServerlessFolder, 'manifest.json')
+    const manifestsFolder = path.join(dotServerlessFolder, this.manifestsDir)
+    
+    // Ensure manifests directory exists
+    if (!fs.existsSync(manifestsFolder)) {
+      fs.mkdirSync(manifestsFolder, { recursive: true })
+    }
+    
+    // Use the stage-specific manifest file path
+    let manifestPath = path.join(manifestsFolder, this.manifestFileName)
     if (customOutputPath) {
-      manifestPath = path.resolve(customOutputPath)
+      // If custom output path provided, add stage to filename to maintain separation
+      const customPathInfo = path.parse(customOutputPath)
+      const newFileName = `${customPathInfo.name}.${this.stage}${customPathInfo.ext}`
+      manifestPath = path.join(customPathInfo.dir, newFileName)
     }
     // console.log('manifestPath', manifestPath)
 
     const currentManifest = getManifestData(manifestPath)
+    // TODOFor diffing? 
+
+
     // console.log('currentManifest', currentManifest)
-    // merge together values. TODO deep merge
-    const manifestData = Object.assign({}, currentManifest, stageData)
+    
+    // Use the direct data without stage wrapping
+    const manifestData = currentStageData
     // console.log('manifestData', manifestData)
     let finalManifest = manifestData
 
@@ -154,9 +310,38 @@ class ServerlessManifestPlugin {
     if (!disableFileOutput) {
       try {
         if (!silenceLogs) {
-          console.log('● Saving Serverless manifest file...\n')
+          console.log(`● Saving Serverless manifest file for stage "${this.stage}"...\n`)
         }
+        // Write to the standard location
         await saveManifest(manifestData, manifestPath)
+        
+        // If we have an account ID, also write to the nested folder structure
+        if (manifestData.accountId) {
+          const accountId = manifestData.accountId
+          const region = manifestData.region || this.serverless.getProvider('aws').getRegion()
+          
+          // Create the nested directory structure
+          const accountFolder = path.join(manifestsFolder, accountId)
+          const regionFolder = path.join(accountFolder, region)
+          
+          // Create directories if they don't exist
+          if (!fs.existsSync(accountFolder)) {
+            fs.mkdirSync(accountFolder, { recursive: true })
+          }
+          
+          if (!fs.existsSync(regionFolder)) {
+            fs.mkdirSync(regionFolder, { recursive: true })
+          }
+          
+          // Write the same data to the nested location
+          const nestedManifestPath = path.join(regionFolder, this.manifestFileName)
+          await saveManifest(manifestData, nestedManifestPath)
+          
+          if (!silenceLogs) {
+            console.log(` Also saved to: ${nestedManifestPath.replace(cwd, '')}`)
+          }
+        }
+        
         if (!silenceLogs) {
           console.log(`✓ Save manifest complete`)
           console.log(` Output path: ${manifestPath.replace(cwd, '')}`)
@@ -172,17 +357,494 @@ class ServerlessManifestPlugin {
     if (outputInJson) {
       console.log(JSON.stringify(finalManifest, null, 2))
     }
+
+    await this.updateMainManifestIndex(silenceLogs)
+
+    return manifestData
+  }
+
+  async afterDeploy() {
+    this.serverless.cli.log('Generating manifest...')
+    
+    const manifestData = await this.generateManifest()
+    
+    // Update the main manifest index after writing the stage-specific manifest
+    await this.updateMainManifestIndex()
+    
+    return this.writeManifest(manifestData)
+  }
+
+  async generate() {
+    this.serverless.cli.log(`Generating manifest for stage "${this.stage}"...`)
+    
+    const manifestData = await this.generateManifest()
+    
+    return this.writeManifest(manifestData)
+  }
+
+  async updateMainManifestIndex(silenceLogs) {
+    const manifestPath = path.join(this.serverless.config.servicePath, '.serverless')
+    const manifestsFolder = path.join(manifestPath, this.manifestsDir)
+    const mainManifestPath = path.join(manifestPath, 'manifest.json')
+    
+    try {
+      // Create the directories if they don't exist
+      if (!fs.existsSync(manifestPath)) {
+        fs.mkdirSync(manifestPath, { recursive: true })
+      }
+      
+      if (!fs.existsSync(manifestsFolder)) {
+        fs.mkdirSync(manifestsFolder, { recursive: true })
+      }
+      
+      // Read the current main manifest if it exists
+      let mainManifest = { byStage: {}, byRegion: {}, byAccount: {}, files: [] }
+      if (fs.existsSync(mainManifestPath)) {
+        try {
+          const mainManifestContent = fs.readFileSync(mainManifestPath, 'utf8')
+          mainManifest = JSON.parse(mainManifestContent)
+          
+          // Make sure required sections exist
+          if (!mainManifest.files) {
+            mainManifest.files = []
+          }
+          
+          // Initialize required nested objects if they don't exist
+          if (!mainManifest.byStage) {
+            mainManifest.byStage = {}
+          }
+          
+          if (!mainManifest.byRegion) {
+            mainManifest.byRegion = {}
+          }
+          
+          if (!mainManifest.byAccount) {
+            mainManifest.byAccount = {}
+          }
+        } catch (error) {
+          this.serverless.cli.log(`Error reading main manifest, creating a new one: ${error.message}`)
+        }
+      }
+      
+      // Get the current region and try to get the accountId
+      const region = this.serverless.getProvider('aws').getRegion()
+      
+      // Try to get the account ID from the manifest file we just created
+      let accountId = ''
+      let stackId = '';
+      const manifestFilePath = path.join(manifestsFolder, this.manifestFileName)
+      
+      if (fs.existsSync(manifestFilePath)) {
+        try {
+          const manifestContent = fs.readFileSync(manifestFilePath, 'utf8')
+          const manifestData = JSON.parse(manifestContent)
+          
+          // Try multiple possible locations for account ID
+          if (manifestData && manifestData.accountId) {
+            accountId = manifestData.accountId
+          } else if (manifestData && manifestData.metadata && manifestData.metadata.accountId) {
+            accountId = manifestData.metadata.accountId
+          } else if (manifestData && manifestData.metadata && manifestData.metadata.stack && 
+                    manifestData.metadata.stack.id) {
+            // Try to extract account ID from stack ID
+            const stackIdValue = manifestData.metadata.stack.id;
+            if (stackIdValue) {
+              const arnParts = stackIdValue.split(':');
+              if (arnParts.length >= 5) {
+                accountId = arnParts[4];
+              }
+            }
+          }
+          
+          // Also extract stackId if available
+          if (manifestData && manifestData.metadata && manifestData.metadata.stack) {
+            stackId = manifestData.metadata.stack.id || '';
+          }
+        } catch (error) {
+          this.serverless.cli.log(`Error reading manifest file to get account ID: ${error.message}`)
+        }
+      }
+      
+      // Try to get account ID directly from provider if still not found
+      if (!accountId) {
+        try {
+          if (this.provider.getAccountId) {
+            const providerAccountId = await this.provider.getAccountId();
+            if (providerAccountId && typeof providerAccountId === 'string') {
+              accountId = providerAccountId;
+            }
+          }
+        } catch (error) {
+          this.serverless.cli.log(`Error getting account ID from provider: ${error.message}`)
+        }
+      }
+      
+      // If account ID is in the byAccount section but not found above, use that
+      if (!accountId && Object.keys(mainManifest.byAccount).length > 0) {
+        // Just use the first account ID in the byAccount section
+        accountId = Object.keys(mainManifest.byAccount)[0];
+      }
+      
+      let stackName = '';
+      let stackDescription = '';
+      let stackLastUpdatedTime = '';
+      let stackConsoleUrl = '';
+      
+      // Try to get stack information from the manifest file
+      if (fs.existsSync(manifestFilePath)) {
+        try {
+          const manifestContent = fs.readFileSync(manifestFilePath, 'utf8');
+          const manifestData = JSON.parse(manifestContent);
+          
+          if (manifestData && manifestData.metadata && manifestData.metadata.stack) {
+            stackName = manifestData.metadata.stack.name || '';
+            stackDescription = manifestData.metadata.stack.description || '';
+            stackLastUpdatedTime = manifestData.metadata.stack.lastUpdatedTime || '';
+            stackConsoleUrl = manifestData.metadata.stack.consoleUrl || '';
+          }
+        } catch (error) {
+          this.serverless.cli.log(`Error reading manifest file to get stack information: ${error.message}`);
+        }
+      }
+      
+      // Standard path to the manifest file (relative path for the index)
+      const relativeManifestPath = `/.serverless/${this.manifestsDir}/${this.manifestFileName}`
+      
+      // Nested manifest path for the account structure
+      const nestedRelativePath = accountId 
+        ? `/.serverless/${this.manifestsDir}/${accountId}/${region}/${this.manifestFileName}`
+        : null
+      
+      // Metadata about this deployment for both byStage and byRegion
+      const deploymentMetadata = {
+        stackName: stackName,
+        description: stackDescription,
+        lastUpdatedTime: stackLastUpdatedTime,
+        consoleUrl: stackConsoleUrl,
+        file: relativeManifestPath,
+        region: region,
+        account: accountId || ''
+      }
+      
+      // Add to byStage with enhanced metadata
+      mainManifest.byStage[this.stage] = deploymentMetadata
+      
+      // Ensure byRegion structure exists for the current region
+      if (!mainManifest.byRegion[region]) {
+        mainManifest.byRegion[region] = {}
+      }
+      
+      // Add to byRegion with enhanced metadata
+      mainManifest.byRegion[region][this.stage] = deploymentMetadata
+      
+      // Organize by account ID if available
+      if (accountId) {
+        // Ensure byAccount structure exists
+        if (!mainManifest.byAccount[accountId]) {
+          mainManifest.byAccount[accountId] = {}
+        }
+        
+        if (!mainManifest.byAccount[accountId][region]) {
+          mainManifest.byAccount[accountId][region] = {}
+        }
+        
+        // For byAccount, point to the nested path
+        mainManifest.byAccount[accountId][region][this.stage] = nestedRelativePath
+        
+        // Add the nested path to the files array
+        if (nestedRelativePath && !mainManifest.files.includes(nestedRelativePath)) {
+          mainManifest.files.push(nestedRelativePath)
+        }
+      }
+      
+      // Update the files array if the standard path isn't already included
+      if (!mainManifest.files.includes(relativeManifestPath)) {
+        mainManifest.files.push(relativeManifestPath)
+      }
+      
+      // Write back the updated manifest or remove it if it's now empty
+      if (
+        Object.keys(mainManifest.byStage).length > 0 || 
+        Object.keys(mainManifest.byRegion).length > 0 ||
+        Object.keys(mainManifest.byAccount || {}).length > 0 ||
+        (mainManifest.files && mainManifest.files.length > 0)
+      ) {
+        // Create an ordered manifest with metadata updated
+        const orderedManifest = {
+          metadata: mainManifest.metadata || {
+            lastUpdated: new Date().toISOString()
+          },
+          byStage: mainManifest.byStage || {},
+          byRegion: mainManifest.byRegion || {},
+          byAccount: mainManifest.byAccount || {},
+          files: mainManifest.files || []
+        }
+        
+        // Update the lastUpdated timestamp
+        orderedManifest.metadata.lastUpdated = new Date().toISOString();
+        
+        fs.writeFileSync(mainManifestPath, JSON.stringify(orderedManifest, null, 2))
+        this.serverless.cli.log(` Index path: ${mainManifestPath}`)
+        
+        // Generate and log the AWS CloudFormation console URL
+        if (stackId && region) {
+          const consoleUrl = getCloudFormationConsoleUrl(region, stackId);
+          if (consoleUrl) {
+            this.serverless.cli.log();
+            this.serverless.cli.log(`AWS CloudFormation console url:`);
+            this.serverless.cli.log(consoleUrl);
+          }
+        } else if (stackConsoleUrl) {
+          this.serverless.cli.log(`AWS CloudFormation console url:`);
+          this.serverless.cli.log(stackConsoleUrl);
+        }
+      } else {
+        fs.unlinkSync(mainManifestPath)
+        this.serverless.cli.log(`Main manifest index removed: ${mainManifestPath}`)
+      }
+    } catch (error) {
+      this.serverless.cli.log(`Error updating main manifest index: ${error.message}`)
+      throw error
+    }
+  }
+
+  async writeManifest(manifestData) {
+    const manifestPath = path.join(this.serverless.config.servicePath, '.serverless')
+    const manifestsFolder = path.join(manifestPath, this.manifestsDir)
+    const manifestFilePath = path.join(manifestsFolder, this.manifestFileName)
+    
+    try {
+      // Ensure both directories exist
+      if (!fs.existsSync(manifestPath)) {
+        fs.mkdirSync(manifestPath, { recursive: true })
+      }
+      
+      if (!fs.existsSync(manifestsFolder)) {
+        fs.mkdirSync(manifestsFolder, { recursive: true })
+      }
+      
+      // Write the manifest data to the standard location
+      fs.writeFileSync(manifestFilePath, JSON.stringify(manifestData, null, 2))
+      this.serverless.cli.log(`Manifest file saved to: ${manifestFilePath}`)
+      
+      // If we have an account ID, also write to the nested folder structure
+      if (manifestData.accountId) {
+        const accountId = manifestData.accountId
+        const region = manifestData.region || this.serverless.getProvider('aws').getRegion()
+        
+        // Create the nested directory structure
+        const accountFolder = path.join(manifestsFolder, accountId)
+        const regionFolder = path.join(accountFolder, region)
+        
+        // Create directories if they don't exist
+        if (!fs.existsSync(accountFolder)) {
+          fs.mkdirSync(accountFolder, { recursive: true })
+        }
+        
+        if (!fs.existsSync(regionFolder)) {
+          fs.mkdirSync(regionFolder, { recursive: true })
+        }
+        
+        // Write the same data to the nested location
+        const nestedManifestPath = path.join(regionFolder, this.manifestFileName)
+        fs.writeFileSync(nestedManifestPath, JSON.stringify(manifestData, null, 2))
+        this.serverless.cli.log(`Manifest file also saved to: ${nestedManifestPath}`)
+        
+        // Return the standard path as the result
+        return manifestFilePath
+      }
+      
+      return manifestFilePath
+    } catch (error) {
+      this.serverless.cli.log(`Error writing manifest file: ${error.message}`)
+      throw error
+    }
+  }
+
+  async clean() {
+    const manifestPath = path.join(this.serverless.config.servicePath, '.serverless')
+    const manifestsFolder = path.join(manifestPath, this.manifestsDir)
+    const manifestFilePath = path.join(manifestsFolder, this.manifestFileName)
+    const mainManifestPath = path.join(manifestPath, 'manifest.json')
+    
+    try {
+      // Try to get the account ID from the manifest file before removing it
+      let accountId = ''
+      let region = this.serverless.getProvider('aws').getRegion()
+      
+      if (fs.existsSync(manifestFilePath)) {
+        try {
+          const manifestContent = fs.readFileSync(manifestFilePath, 'utf8')
+          const manifestData = JSON.parse(manifestContent)
+          if (manifestData && manifestData.accountId) {
+            accountId = manifestData.accountId
+          }
+          if (manifestData && manifestData.region) {
+            region = manifestData.region
+          }
+        } catch (error) {
+          this.serverless.cli.log(`Error reading manifest file to get account ID: ${error.message}`)
+        }
+        
+        // Remove the standard manifest file
+        fs.unlinkSync(manifestFilePath)
+        this.serverless.cli.log(`Manifest file removed: ${manifestFilePath}`)
+        
+        // Remove the nested manifest file if it exists
+        if (accountId) {
+          const nestedManifestPath = path.join(manifestsFolder, accountId, region, this.manifestFileName)
+          if (fs.existsSync(nestedManifestPath)) {
+            fs.unlinkSync(nestedManifestPath)
+            this.serverless.cli.log(`Nested manifest file removed: ${nestedManifestPath}`)
+            
+            // Try to clean up empty directories
+            const regionDir = path.dirname(nestedManifestPath)
+            const accountDir = path.dirname(regionDir)
+            
+            // Remove region directory if empty
+            try {
+              if (fs.readdirSync(regionDir).length === 0) {
+                fs.rmdirSync(regionDir)
+                this.serverless.cli.log(`Removed empty region directory: ${regionDir}`)
+                
+                // Remove account directory if empty
+                if (fs.readdirSync(accountDir).length === 0) {
+                  fs.rmdirSync(accountDir)
+                  this.serverless.cli.log(`Removed empty account directory: ${accountDir}`)
+                }
+              }
+            } catch (err) {
+              this.serverless.cli.log(`Error cleaning up empty directories: ${err.message}`)
+            }
+          }
+        }
+      } else {
+        this.serverless.cli.log(`Manifest file not found: ${manifestFilePath}`)
+      }
+      
+      // Update the main manifest to remove this stage
+      if (fs.existsSync(mainManifestPath)) {
+        try {
+          const mainManifestContent = fs.readFileSync(mainManifestPath, 'utf8')
+          const mainManifest = JSON.parse(mainManifestContent)
+          
+          // The relative paths to remove from all sections
+          const relativeManifestPath = `/.serverless/${this.manifestsDir}/${this.manifestFileName}`
+          const nestedRelativePath = accountId 
+            ? `/.serverless/${this.manifestsDir}/${accountId}/${region}/${this.manifestFileName}`
+            : null
+          
+          // Remove the stage from byStage (now contains enhanced metadata)
+          if (mainManifest.byStage && mainManifest.byStage[this.stage]) {
+            delete mainManifest.byStage[this.stage]
+          }
+          
+          // Remove the stage from byRegion (now contains enhanced metadata)
+          if (mainManifest.byRegion && mainManifest.byRegion[region] && mainManifest.byRegion[region][this.stage]) {
+            delete mainManifest.byRegion[region][this.stage]
+            
+            // Remove the region if it's now empty
+            if (Object.keys(mainManifest.byRegion[region]).length === 0) {
+              delete mainManifest.byRegion[region]
+            }
+          }
+          
+          // Remove the stage from byAccount if accountId is available
+          if (accountId && mainManifest.byAccount && mainManifest.byAccount[accountId]) {
+            if (mainManifest.byAccount[accountId][region] && mainManifest.byAccount[accountId][region][this.stage]) {
+              delete mainManifest.byAccount[accountId][region][this.stage]
+              
+              // Remove the region if it's now empty
+              if (Object.keys(mainManifest.byAccount[accountId][region]).length === 0) {
+                delete mainManifest.byAccount[accountId][region]
+              }
+              
+              // Remove the account if it's now empty
+              if (Object.keys(mainManifest.byAccount[accountId]).length === 0) {
+                delete mainManifest.byAccount[accountId]
+              }
+            }
+          }
+          
+          // Remove both paths from the files array
+          if (mainManifest.files) {
+            mainManifest.files = mainManifest.files.filter(file => 
+              file !== relativeManifestPath && (!nestedRelativePath || file !== nestedRelativePath)
+            )
+          }
+          
+          // Write back the updated manifest or remove it if it's now empty
+          if (
+            Object.keys(mainManifest.byStage).length > 0 || 
+            Object.keys(mainManifest.byRegion).length > 0 ||
+            Object.keys(mainManifest.byAccount || {}).length > 0 ||
+            (mainManifest.files && mainManifest.files.length > 0)
+          ) {
+            // Create an ordered manifest with metadata updated
+            const orderedManifest = {
+              metadata: mainManifest.metadata || {
+                lastUpdated: new Date().toISOString()
+              },
+              byStage: mainManifest.byStage || {},
+              byRegion: mainManifest.byRegion || {},
+              byAccount: mainManifest.byAccount || {},
+              files: mainManifest.files || []
+            }
+            
+            // Update the lastUpdated timestamp
+            orderedManifest.metadata.lastUpdated = new Date().toISOString();
+            
+            fs.writeFileSync(mainManifestPath, JSON.stringify(orderedManifest, null, 2))
+            this.serverless.cli.log(`Main manifest index updated at: ${mainManifestPath}`)
+          } else {
+            fs.unlinkSync(mainManifestPath)
+            this.serverless.cli.log(`Main manifest index removed: ${mainManifestPath}`)
+          }
+        } catch (error) {
+          this.serverless.cli.log(`Error updating main manifest index: ${error.message}`)
+        }
+      }
+    } catch (error) {
+      this.serverless.cli.log(`Error removing manifest file: ${error.message}`)
+      throw error
+    }
+  }
+
+  async beforeRemove() {
+    return this.clean()
+  }
+
+  async readManifest() {
+    const manifestPath = path.join(this.serverless.config.servicePath, '.serverless')
+    const manifestsFolder = path.join(manifestPath, this.manifestsDir)
+    const manifestFilePath = path.join(manifestsFolder, this.manifestFileName)
+    
+    try {
+      if (fs.existsSync(manifestFilePath)) {
+        const manifestContent = fs.readFileSync(manifestFilePath, 'utf8')
+        return JSON.parse(manifestContent)
+      }
+    } catch (error) {
+      this.serverless.cli.log(`Error reading manifest file: ${error.message}`)
+    }
+    
+    return null
   }
 }
 
 async function saveManifest(manifestData, manifestPath) {
   const cwd = process.cwd()
   const parentDir = path.dirname(manifestPath)
+  
+  // Ensure the parent directory exists - use recursive to create the full path
   if (!fsExistsSync(parentDir)) {
-    fs.mkdirSync(parentDir)
+    fs.mkdirSync(parentDir, { recursive: true })
   }
+  
+  // Write the manifest data directly without stage wrapping
   const data = JSON.stringify(manifestData, null, 2)
   fs.writeFileSync(manifestPath, data)
+  
   // Ensure git ignore added
   await ensureGitIgnore(cwd)
 }
@@ -203,7 +865,113 @@ function getManifestData(filePath) {
   return {}
 }
 
-function getFormattedData(yaml = {}, stackOutput, srcDir) {
+function getApiGatewayRestEndpoints(resources) {
+  const apiEndpoints = {}
+  
+  // Helper function to get full path by traversing parents
+  function getFullPath(resource, resources) {
+    const pathParts = [resource.Properties.PathPart]
+    let currentResource = resource
+    
+    // Keep traversing up until we hit the root resource
+    while (currentResource.Properties.ParentId) {
+      const parentId = currentResource.Properties.ParentId.Ref || currentResource.Properties.ParentId['Fn::GetAtt']?.[0]
+      // console.log('parentId', parentId)
+      if (!parentId) break
+      
+      let parentResource = resources[parentId]
+      if (!parentResource) break
+      
+      pathParts.unshift(parentResource.Properties.PathPart)
+      currentResource = parentResource
+    }
+    
+    return pathParts.join('/') // .replace(/^\//, '')
+  }
+
+  // First pass: collect all resources and their full paths
+  Object.entries(resources).forEach(([resourceName, resource]) => {
+    if (resource.Type === 'AWS::ApiGateway::Resource') {
+      const endpoint = {
+        path: getFullPath(resource, resources),
+        methods: []
+      }
+      
+      // Find associated methods for this resource
+      Object.entries(resources).forEach(([methodName, methodResource]) => {
+        if (
+            methodResource.Type === 'AWS::ApiGateway::Method' && 
+            methodResource.Properties.ResourceId.Ref === resourceName
+          ) {
+          
+          const method = {
+            httpMethod: methodResource.Properties.HttpMethod,
+            authorizationType: methodResource.Properties.AuthorizationType,
+            apiKeyRequired: methodResource.Properties.ApiKeyRequired || false
+          }
+          
+          // Add integration details if present
+          if (methodResource.Properties.Integration) {
+            method.integration = {
+              type: methodResource.Properties.Integration.Type,
+              uri: methodResource.Properties.Integration.Uri || null,
+              httpMethod: methodResource.Properties.Integration.IntegrationHttpMethod || null
+            }
+          }
+
+          if (method.httpMethod !== 'OPTIONS') {
+            endpoint.methods.push(method)
+          }
+        }
+      })
+      
+      if(endpoint.methods.length) {
+        apiEndpoints[resourceName] = endpoint
+      }
+    }
+  })
+
+  // deepLog('apiEndpoints', apiEndpoints)
+  // console.log('apiEndpoints', apiEndpoints)
+  return apiEndpoints
+}
+
+const util = require('util')
+
+function deepLog(objOrLabel, logVal) {
+  let obj = objOrLabel
+  if (typeof objOrLabel === 'string') {
+    obj = logVal
+    console.log(objOrLabel)
+  }
+  console.log(util.inspect(obj, false, null, true))
+}
+
+/*
+{
+  OutputKey: 'YoLambdaFunctionUrl',
+  OutputValue: 'https://hk62gqtwbu7q3pfzs67y5eqfay0klxep.lambda-url.us-west-2.on.aws/',
+  Description: 'Lambda Function URL',
+  ExportName: 'sls-test-service-for-manifest-plugin-dev-YoLambdaFunctionUrl'
+}
+*/
+function getAllLambdaFunctionUrls(compiledCf, outputs) {
+  return outputs.filter((output) => {
+    return output.OutputKey.match(/FunctionUrl$/) && output.OutputValue && output.OutputValue.match(/lambda-url/)
+  }).map((output) => {
+    // Find YoLambdaFunctionUrl
+    const resources = compiledCf.Resources || {}
+    const functionDetails = resources[output.OutputKey] || {}
+    const functionProperties = functionDetails.Properties || {}
+    return {
+      url: output.OutputValue,
+      functionName: output.OutputKey.replace(/LambdaFunctionUrl$/, ''),
+      props: functionProperties
+    }
+  })
+}
+
+function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, region, accountId) {
   let resources = {}
   if (yaml.resources && yaml.resources.Resources) {
     resources = yaml.resources.Resources
@@ -214,18 +982,59 @@ function getFormattedData(yaml = {}, stackOutput, srcDir) {
     outputs = yaml.resources.Outputs
   }
 
-  const manifestData = Object.keys(yaml.functions).reduce((obj, functionName) => {
+  // console.log('stackOutput', stackOutput)
+
+  // Ensure accountId is a string
+  if (accountId && typeof accountId !== 'string') {
+    accountId = String(accountId)
+  }
+  
+  // If accountId is an object or empty, set to empty string
+  if (!accountId || typeof accountId === 'object') {
+    accountId = ''
+  }
+
+  // Try to extract account ID from stack outputs if not provided
+  if ((!accountId || accountId === '') && stackOutput && stackOutput.Outputs) {
+    // Look for any ARN in the outputs to extract account ID
+    for (const output of stackOutput.Outputs) {
+      if (output.OutputValue && output.OutputValue.includes('arn:aws')) {
+        const arnParts = output.OutputValue.split(':')
+        if (arnParts.length >= 5) {
+          accountId = arnParts[4]
+          break
+        }
+      }
+    }
+  }
+
+  const apiEndpoints = getApiGatewayRestEndpoints(resources)
+  const lambdaFunctionUrls = getAllLambdaFunctionUrls(cfTemplateData, stackOutput.Outputs)
+  // deepLog('lambdaFunctionUrls', lambdaFunctionUrls)
+  // return
+
+  let manifestData = Object.keys(yaml.functions).reduce((obj, functionName) => {
     const functionData = yaml.functions[functionName]
     const functionRuntime = getFunctionRuntime(functionData, yaml)
     const liveFunctionData = getFunctionData(functionName, stackOutput.Outputs)
 
+    // Try to extract account ID from function ARN if still not found
+    if ((!accountId || accountId === '') && liveFunctionData && liveFunctionData.OutputValue && 
+        liveFunctionData.OutputValue !== 'Not deployed yet' && 
+        liveFunctionData.OutputValue.includes('arn:aws')) {
+      const arnParts = liveFunctionData.OutputValue.split(':')
+      if (arnParts.length >= 5) {
+        accountId = arnParts[4]
+      }
+    }
+
     if (liveFunctionData.OutputValue === 'Not deployed yet') {
-      // Don't add undeployed functions to manifest
+      // Don't add non deployed functions to manifest
       return obj
     }
 
     const functionEvents = (functionData && functionData.events) ? functionData.events : []
-    let functionDependancies = {}
+    let functionDependencies = {}
 
     if (functionData.events) {
       const domainInfo = hasCustomDomain(yaml)
@@ -314,7 +1123,7 @@ function getFormattedData(yaml = {}, stackOutput, srcDir) {
 
       // console.log('yaml.functions', yaml.functions[functionName])
 
-      /* If runtime is node we can parse and list dependancies */
+      /* If runtime is node we can parse and list dependencies */
       // console.log('functionRuntime', functionRuntime)
 
       if (functionRuntime.match(/nodejs/)) {
@@ -337,16 +1146,16 @@ function getFormattedData(yaml = {}, stackOutput, srcDir) {
           return moduleName
         })))
 
-        const modulesWithVersions = addDependancyVersions(modules, pkgData)
+        const modulesWithVersions = addDependencyVersions(modules, pkgData)
 
         const nestedModules = modules.filter((el) => {
           // Remove direct dependencies (which should be listed in package.json)
           return directDeps.indexOf(el) < 0
         })
         // console.log('directDeps', directDeps)
-        functionDependancies = {
-          direct: addDependancyVersions(directDeps, pkgData),
-          nested: addDependancyVersions(nestedModules, pkgData),
+        functionDependencies = {
+          direct: addDependencyVersions(directDeps, pkgData),
+          nested: addDependencyVersions(nestedModules, pkgData),
         }
       }
     }
@@ -370,7 +1179,7 @@ function getFormattedData(yaml = {}, stackOutput, srcDir) {
         arn: liveFunctionData.OutputValue,
         runtime: functionRuntime,
         triggers: functionEventTriggers,
-        dependancies: functionDependancies
+        dependencies: functionDependencies
       }
     }
 
@@ -379,8 +1188,27 @@ function getFormattedData(yaml = {}, stackOutput, srcDir) {
     // Assign to reducer
     obj['functions'] = Object.assign({}, funcObj, finalFunctionData)
 
+    // Add API endpoints to manifest data
+    obj.endpoints = apiEndpoints
+
     return obj
   }, {
+    metadata: {
+      lastUpdated: new Date().toISOString(),
+      region: region || '', // Add region as a top-level key
+      accountId: accountId || '', // Add account ID as a top-level key right after region (always a string)
+      stack: {
+        id: stackOutput.StackId || '',
+        name: stackOutput.StackName || '',
+        status: stackOutput.StackStatus || '',
+        description: stackOutput.Description || '',
+        creationTime: stackOutput.CreationTime ? new Date(stackOutput.CreationTime).toISOString() : '',
+        lastUpdatedTime: stackOutput.LastUpdatedTime ? new Date(stackOutput.LastUpdatedTime).toISOString() : '',
+        tags: stackOutput.Tags || [],
+        terminationProtection: stackOutput.EnableTerminationProtection || false,
+        consoleUrl: getCloudFormationConsoleUrl(region, stackOutput.StackId)
+      }
+    },
     urls: {
       apiGateway: '',
       apiGatewayBaseURL: '',
@@ -391,10 +1219,29 @@ function getFormattedData(yaml = {}, stackOutput, srcDir) {
       byMethod: {}
     },
     functions: {},
-    outputs: stackOutput.Outputs
-    // TODO remove sensitive data from resources
-    // resources: resources
+    outputs: stackOutput.Outputs,
   })
+
+  if (apiEndpoints) {
+    manifestData = Object.keys(apiEndpoints).reduce((obj, endpointName) => {
+      const endpointData = apiEndpoints[endpointName]
+      // console.log('endpointData', endpointData)
+
+      // add endpoints to manifestData byPath
+      const byPath = obj.urls['byPath']
+      byPath[endpointData.path] = endpointData
+
+      // Add endpoints to byMethod
+      const byMethod = obj.urls['byMethod']
+      endpointData.methods.forEach((endpointMethod) => {
+        const method = endpointMethod.httpMethod
+        byMethod[method] = byMethod[method] ? byMethod[method].concat(endpointData.path) : [endpointData.path]
+      })
+
+      // obj.endpoints[endpointName] = apiEndpoints[endpointName]
+      return obj
+    }, manifestData)
+  }
 
   return manifestData
 }
@@ -456,7 +1303,7 @@ function isObject(obj) {
 }
 
 // Add dependency versions to package names
-function addDependancyVersions(array, pkgData) {
+function addDependencyVersions(array, pkgData) {
   return array.map((name) => {
     if (!pkgData[name] || !pkgData[name]._from) {
       return name
@@ -502,9 +1349,11 @@ function evaluateEnabled(enabled) {
 
 function hasCustomDomain(yaml = {}) {
   const { plugins, custom } = yaml
-  if (hasPlugin(plugins, 'serverless-domain-manager') &&
+  if (
+      hasPlugin(plugins, 'serverless-domain-manager') &&
       custom && custom.customDomain && custom.customDomain.domainName &&
-      evaluateEnabled(custom.customDomain.enabled)) {
+      evaluateEnabled(custom.customDomain.enabled)
+    ) {
     return custom.customDomain
   }
   return false
@@ -571,14 +1420,15 @@ function getFunctionRuntimeExtension(runtime) {
     extension = '.py'
   } else if (runtime.match(/go/)) {
     extension = '.go'
+  } else if (runtime.match(/java/)) {
+    extension = '.jar'
   }
   return extension
 }
-
 // ZazLambdaFunctionQualifiedArn
 function getFunctionData(functionName, outputs) {
   const liveFunctionData = outputs.filter((out) => {
-    return `${jsUcfirst(functionName)}` === out.OutputKey.replace('LambdaFunctionQualifiedArn', '')
+    return `${upperCaseFirst(functionName)}` === out.OutputKey.replace('LambdaFunctionQualifiedArn', '')
   })
 
   if (liveFunctionData && liveFunctionData.length) {
@@ -596,17 +1446,8 @@ function getFunctionNameFromArn(arn) {
   return arn.split(':')[6]
 }
 
-function jsUcfirst(string) {
+function upperCaseFirst(string) {
   return string.charAt(0).toUpperCase() + string.slice(1)
-}
-
-function fsExistsSync(myDir) {
-  try {
-    fs.accessSync(myDir)
-    return true
-  } catch (e) {
-    return false
-  }
 }
 
 module.exports = ServerlessManifestPlugin
