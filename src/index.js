@@ -2,12 +2,18 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { promisify } = require('util')
-const readFile = promisify(fs.readFile)
-const writeFile = promisify(fs.writeFile)
 const { ensureGitIgnore } = require('./utils/gitignore')
 const { getDependencies, getShallowDeps } = require('./utils/getDeps')
 const { getCloudFormationConsoleUrl } = require('./utils/cloudformation-url')
 const { fsExistsSync } = require('./utils/fs')
+const { getResourceInfo } = require('./utils/get-resource-info')
+const { getFunctionUrlConfig, removeDuplicates } = require('./utils/get-function-url')
+const { getRegionFromArn, getFunctionNameFromArn, upperCase, upperCaseFirst } = require('./utils/string')
+const { getAPIGatewayHttpUrl } = require('./utils/cloudformation/get-apigateway-http')
+const { getAPIGatewayRestUrl } = require('./utils/cloudformation/get-apigateway-rest')
+const { deepLog } = require('./utils/log')
+const readFile = promisify(fs.readFile)
+const writeFile = promisify(fs.writeFile)
 
 class ServerlessManifestPlugin {
   constructor(serverless, options) {
@@ -132,7 +138,9 @@ class ServerlessManifestPlugin {
             try {
               accountId = await accountIdResult
             } catch (e) {
-              this.serverless.cli.log(`Warning: Could not retrieve AWS account ID from Promise: ${e.message}`)
+              if (e.message.includes('security token') && e.message.includes('expired')) {
+                throw e
+              }
               accountId = ''
             }
           } else {
@@ -144,7 +152,11 @@ class ServerlessManifestPlugin {
             accountId = String(accountId)
           }
         } catch (e) {
-          this.serverless.cli.log(`Warning: Could not retrieve AWS account ID: ${e.message}`)
+          this.serverless.cli.log(`Error: Could not retrieve AWS account ID.`)
+          this.serverless.cli.log(`${e.message}`)
+          if (e.message.includes('security token') && e.message.includes('expired')) {
+            throw new Error('AWS security token expired. Please re-authenticate.')
+          }
         }
       }
       
@@ -176,7 +188,7 @@ class ServerlessManifestPlugin {
         }
         
         // Pass the full stack ID to getFormattedData
-        const manifestData = getFormattedData(
+        const manifestData = await getFormattedData(
           this.serverless.service, 
           stack, 
           srcPath, 
@@ -192,6 +204,7 @@ class ServerlessManifestPlugin {
         stageData[stage] = manifestData
         return stageData
       } catch (err) {
+        console.log('err', err)
         this.serverless.cli.log(`Error fetching CloudFormation data: ${err.message}`)
         // Return empty data on error to allow continued operation
         var stageData = {}
@@ -239,13 +252,12 @@ class ServerlessManifestPlugin {
     }
 
     if (disableFileOutput && !handlePostProcessing) {
-        console.log('No manifest data processed or saved. "disableOutput" is true & no "postProcess" option is set')
-        console.log(' Make sure you create a function to handle your manifest data')
-        console.log(' Example:')
-        console.log('  postProcess: ./my-file-to-process.js')
+      console.log('No manifest data processed or saved. "disableOutput" is true & no "postProcess" option is set')
+      console.log(' Make sure you create a function to handle your manifest data')
+      console.log(' Example:')
+      console.log('  postProcess: ./my-file-to-process.js')
       return false
     }
-
 
     let cfTemplateData = {}
     try {
@@ -344,8 +356,8 @@ class ServerlessManifestPlugin {
         
         if (!silenceLogs) {
           console.log(`✓ Save manifest complete`)
-          console.log(` Output path: ${manifestPath.replace(cwd, '')}`)
-          console.log(` Full path:   ${manifestPath}`)
+          console.log(`  Output path:  ${manifestPath.replace(cwd, '')}`)
+          console.log(`  Full path:    ${manifestPath}`)
         }
       } catch (err) {
         console.log('Error during serverless manifest saving...')
@@ -584,7 +596,7 @@ class ServerlessManifestPlugin {
         orderedManifest.metadata.manifestUpdated = new Date().toISOString();
         
         fs.writeFileSync(mainManifestPath, JSON.stringify(orderedManifest, null, 2))
-        this.serverless.cli.log(` Index path: ${mainManifestPath}`)
+        this.serverless.cli.log(`  Index path:   ${mainManifestPath}`)
         
         // Generate and log the AWS CloudFormation console URL
         if (stackId && region) {
@@ -595,6 +607,7 @@ class ServerlessManifestPlugin {
             this.serverless.cli.log(consoleUrl);
           }
         } else if (stackConsoleUrl) {
+          this.serverless.cli.log();
           this.serverless.cli.log(`AWS CloudFormation console url:`);
           this.serverless.cli.log(stackConsoleUrl);
         }
@@ -865,6 +878,70 @@ function getManifestData(filePath) {
   return {}
 }
 
+function resolveRestApiId(properties) {
+  if (typeof properties.RestApiId === 'string') {
+    return properties.RestApiId
+  }
+  if (properties.RestApiId.Ref) {
+    return properties.RestApiId.Ref
+  }
+  if (properties.RestApiId['Fn::GetAtt'] && properties.RestApiId['Fn::GetAtt'].length === 2 && properties.RestApiId['Fn::GetAtt'][1] === 'Id') {
+    return properties.RestApiId['Fn::GetAtt']?.[0]
+  }
+
+  throw new Error('Could not resolve RestApiId')
+}
+
+function resolveHttpApiId(properties) {
+  if (typeof properties.ApiId === 'string') {
+    return properties.ApiId
+  }
+  if (properties.ApiId.Ref) {
+    return properties.ApiId.Ref
+  }
+  if (properties.ApiId['Fn::GetAtt'] && properties.ApiId['Fn::GetAtt'].length === 2 && properties.ApiId['Fn::GetAtt'][1] === 'Id') {
+    return properties.ApiId['Fn::GetAtt']?.[0]
+  }
+
+  throw new Error('Could not resolve HttpApiId')
+}
+
+function getApiGatewayHttpEndpoints(resources) {
+  const httpApiRoutes = []
+
+  // Find associated methods for this resource
+  Object.entries(resources).forEach(([resourceName, resource]) => {
+    if (resource.Type === 'AWS::ApiGatewayV2::Route') {
+      const httpApiId = resolveHttpApiId(resource.Properties || {})
+      const path = resource.Properties.RouteKey.split(' ')[1]
+      const methodString = resource.Properties.RouteKey.split(' ')[0]
+      const method = {
+        httpMethod: methodString,
+        ...resource.Properties,
+        // authorizationType: methodResource.Properties.AuthorizationType,
+        // apiKeyRequired: methodResource.Properties.ApiKeyRequired || false
+      }
+      const endpoint = {
+        api: httpApiId,
+        url: '',
+        path,
+        type: 'apiGatewayHttp',
+        methods: [method],
+        // ApiId: httpApiId,
+        resourceName,
+      }
+
+      httpApiRoutes.push(endpoint)
+    }
+  })
+  // deepLog('httpApiRoutes', httpApiRoutes)
+
+  const combinedHttpApiRoutes = combineMatchingItems(httpApiRoutes)
+
+  return combinedHttpApiRoutes
+}
+
+
 function getApiGatewayRestEndpoints(resources) {
   const apiEndpoints = {}
   
@@ -891,16 +968,23 @@ function getApiGatewayRestEndpoints(resources) {
 
   // First pass: collect all resources and their full paths
   Object.entries(resources).forEach(([resourceName, resource]) => {
+    console.log('resourceName', resourceName, resource.Type)
     if (resource.Type === 'AWS::ApiGateway::Resource') {
+      const restApiId = resolveRestApiId((resource.Properties || {}))
       const endpoint = {
+        api: restApiId,
+        url: '',
         path: getFullPath(resource, resources),
-        methods: []
+        type: 'apiGatewayRest',
+        methods: [],
+        // RestApiId: restApiId
       }
       
       // Find associated methods for this resource
       Object.entries(resources).forEach(([methodName, methodResource]) => {
         if (
             methodResource.Type === 'AWS::ApiGateway::Method' && 
+            // TODO match strings too
             methodResource.Properties.ResourceId.Ref === resourceName
           ) {
           
@@ -925,26 +1009,63 @@ function getApiGatewayRestEndpoints(resources) {
         }
       })
       
-      if(endpoint.methods.length) {
+      if (endpoint.methods.length) {
         apiEndpoints[resourceName] = endpoint
       }
+    } else if (resource.Type === 'AWS::ApiGatewayV2::Route') {
+      // http api routes
     }
   })
+  // deepLog('httpApiRoutes', httpApiRoutes)
+  
 
   // deepLog('apiEndpoints', apiEndpoints)
+  // process.exit(0)
   // console.log('apiEndpoints', apiEndpoints)
   return apiEndpoints
 }
 
-const util = require('util')
 
-function deepLog(objOrLabel, logVal) {
-  let obj = objOrLabel
-  if (typeof objOrLabel === 'string') {
-    obj = logVal
-    console.log(objOrLabel)
+
+/**
+ * Combines array items with matching path and ApiId
+ * @param {Array<Object>} input Array of items with path, methods, ApiId and any other properties
+ * @return {Array<Object>} Combined items
+ */
+function combineMatchingItems(input) {
+  const groupedMap = {}
+  
+  for (const item of input) {
+    const key = item.path + "||" + item.ApiId
+    
+    if (!groupedMap[key]) {
+      // Create a new object with all properties from original item
+      const newItem = {}
+      for (const prop in item) {
+        if (prop === 'methods') {
+          newItem[prop] = item[prop].slice() // Copy methods array
+        } else {
+          newItem[prop] = item[prop] // Copy all other properties
+        }
+      }
+      groupedMap[key] = newItem
+    } else {
+      // Keep existing properties but merge methods
+      const existing = groupedMap[key]
+      for (let i = 0; i < item.methods.length; i++) {
+        existing.methods.push(item.methods[i])
+      }
+      
+      // Copy any properties that might exist in this item but not in existing
+      for (const prop in item) {
+        if (prop !== 'methods' && !(prop in existing)) {
+          existing[prop] = item[prop]
+        }
+      }
+    }
   }
-  console.log(util.inspect(obj, false, null, true))
+  
+  return Object.values(groupedMap)
 }
 
 /*
@@ -955,23 +1076,145 @@ function deepLog(objOrLabel, logVal) {
   ExportName: 'sls-test-service-for-manifest-plugin-dev-YoLambdaFunctionUrl'
 }
 */
-function getAllLambdaFunctionUrls(compiledCf, outputs) {
-  return outputs.filter((output) => {
+function getAllLambdaFunctionUrls(yaml, compiledCf, stackOutput) {
+  const outputs = stackOutput.Outputs || []
+  const stackName = stackOutput.StackName || ''
+
+  /* Check serverless.yml for functions with url property */
+  let fnsWithUrls = []
+  if (yaml.functions) {
+    const fns = Object.keys(yaml.functions)
+    // console.log('fns', fns)
+    fnsWithUrls = fns.filter((fn) => {
+      const fnData = yaml.functions[fn]
+      // console.log('fnData', fnData)
+      return fnData && fnData.hasOwnProperty('url')
+    }).map((fn) => {
+      if (yaml.functions[fn] && yaml.functions[fn].hasOwnProperty('name')) {
+        return {
+          fnName: yaml.functions[fn].name,
+          fnConfig: yaml.functions[fn],
+          via: 'serverless.yml function config'
+        }
+      }
+      return yaml.functions[fn]
+    })
+    deepLog('serverless.yml functions with urls', fnsWithUrls)
+  }
+
+  /* Check stack outputs for lambda function urls */
+  const fromOutputs = outputs.filter((output) => {
     return output.OutputKey.match(/FunctionUrl$/) && output.OutputValue && output.OutputValue.match(/lambda-url/)
   }).map((output) => {
     // Find YoLambdaFunctionUrl
     const resources = compiledCf.Resources || {}
-    const functionDetails = resources[output.OutputKey] || {}
-    const functionProperties = functionDetails.Properties || {}
+    const functionUrlDetails = resources[output.OutputKey] || {}
+    const functionProperties = functionUrlDetails.Properties || {}
+    const aproxFnName = output.OutputKey.replace(/LambdaFunctionUrl$/, '')
+    // lower case first letter
+    const fnNameLower = aproxFnName.charAt(0).toLowerCase() + aproxFnName.slice(1)
+    let resolvedFnName = functionProperties.FunctionName
+
+    const fnDetails = resolveFunction(functionUrlDetails, compiledCf)
+    
+    if (!resolvedFnName) {
+      if (yaml.functions && yaml.functions[fnNameLower]) {
+        resolvedFnName = stackOutput.StackName + '-' + fnNameLower
+      } else if (yaml.functions && yaml.functions[aproxFnName]) {
+        resolvedFnName = stackOutput.StackName + '-' + aproxFnName
+      }
+    }
+
     return {
+      fnName: resolvedFnName, 
       url: output.OutputValue,
-      functionName: output.OutputKey.replace(/LambdaFunctionUrl$/, ''),
-      props: functionProperties
+      fnUrlResource: Object.assign({
+        logicalId: output.OutputKey,
+      }, functionUrlDetails),
+      fnResource: Object.assign({
+        logicalId: fnDetails[0],
+      }, fnDetails[1]),
+      via: 'stack outputs'
     }
   })
+  deepLog('fromOutputs', fromOutputs)
+
+  function resolveFunction(resourceDetails, compiledCf) {
+    if (typeof resourceDetails === 'string') {
+      return resourceDetails
+    }
+    const functionProperties = resourceDetails.Properties || {}
+    if (resourceDetails && functionProperties && functionProperties.TargetFunctionArn) {
+      if (typeof functionProperties.TargetFunctionArn == 'string' && functionProperties.TargetFunctionArn.includes('arn:aws:lambda')) {
+        return [ undefined, getFunctionNameFromArn(functionProperties.TargetFunctionArn) ]
+      }
+      const targetDetails = functionProperties.TargetFunctionArn
+      if (targetDetails) {
+        if (targetDetails['Fn::GetAtt'] && targetDetails['Fn::GetAtt'].length === 2 && targetDetails['Fn::GetAtt'][1] === 'Arn') {
+          const logicalId = targetDetails['Fn::GetAtt'][0]
+          const fnResource = compiledCf.Resources[logicalId]
+          return [logicalId, fnResource]
+        } else if (targetDetails.Ref) {
+          const fnResource = compiledCf.Resources[targetDetails.Ref]
+          return [targetDetails.Ref, fnResource]
+        }
+      }
+    }
+  }
+
+  /* Check stack resources for lambda function urls */
+  const fromResources = Object.keys(compiledCf.Resources).filter((resource) => {
+    return compiledCf.Resources[resource].Type === 'AWS::Lambda::Url'
+  }).map((resource) => {
+    const resourceDetails = compiledCf.Resources[resource] || {}
+    const resourceProperties = resourceDetails.Properties || {}
+    const fnDetails = resolveFunction(resourceDetails, compiledCf)
+    if (typeof fnDetails === 'string') {
+      return {
+        fnName: fnDetails,
+        logicialId: resource,
+        via: 'compiledCf outputs arn string'
+      }
+    } else if (fnDetails[1] && fnDetails[1].Properties && fnDetails[1].Properties.FunctionName && typeof fnDetails[1].Properties.FunctionName === 'string') {
+      return Object.assign({
+        fnName: fnDetails[1].Properties.FunctionName,
+        fnResource: Object.assign({
+          logicalId: fnDetails[0],
+        }, fnDetails[1]),
+        via: 'compiledCf outputs function logical resource'
+      })
+    }
+    return fnDetails
+  })
+
+  deepLog('fromResources', fromResources)
+
+  const foundFnsWithUrls = fromOutputs.concat(fromResources).concat(fnsWithUrls)
+  deepLog('foundFnsWithUrls', foundFnsWithUrls)
+
+  // remove duplicates name and Properties.FunctionName
+  const uniqueFnsWithUrls = removeDuplicates(foundFnsWithUrls)
+  deepLog('uniqueFnsWithUrls', uniqueFnsWithUrls)
+
+
+  const formatted = uniqueFnsWithUrls.map((fn) => {
+    if (fn.fnUrlResource && fn.fnUrlResource.Properties && fn.fnUrlResource.Properties.Cors &&  fn.fnUrlResource.Properties.Cors.AllowMethods) {
+      fn.methods = fn.fnUrlResource.Properties.Cors.AllowMethods.map((method) => {
+        return { httpMethod: method }
+      })
+    }
+    return fn
+  })
+
+  // process.exit(0)
+
+  // const resourceInfo = await getResourceInfo("tester-xyz-user-service-prod", "CustomResourceDelayFunction", "us-east-1")
+  // console.log('resourceInfo', resourceInfo)
+
+  return formatted
 }
 
-function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, region, accountId) {
+async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, region, accountId) {
   let resources = {}
   if (yaml.resources && yaml.resources.Resources) {
     resources = yaml.resources.Resources
@@ -982,7 +1225,7 @@ function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, region
     outputs = yaml.resources.Outputs
   }
 
-  // console.log('stackOutput', stackOutput)
+  console.log('stackOutput', stackOutput)
 
   // Ensure accountId is a string
   if (accountId && typeof accountId !== 'string') {
@@ -1007,10 +1250,83 @@ function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, region
       }
     }
   }
+  const httpApiEndpoints = getApiGatewayHttpEndpoints(cfTemplateData.Resources)
 
-  const apiEndpoints = getApiGatewayRestEndpoints(resources)
-  const lambdaFunctionUrls = getAllLambdaFunctionUrls(cfTemplateData, stackOutput.Outputs)
-  // deepLog('lambdaFunctionUrls', lambdaFunctionUrls)
+  const apiEndpoints = getApiGatewayRestEndpoints(cfTemplateData.Resources)
+
+  if (httpApiEndpoints.length) {
+    // deepLog('combinedHttpApiRoutes', combinedHttpApiRoutes)
+    httpApiEndpoints.forEach((route) => {
+      apiEndpoints[route.resourceName] = route
+    })
+    // process.exit(0)
+  }
+
+  /* Now we are going to resolve the deployed urls */
+  const urlKeys = Object.keys(apiEndpoints)
+  const resolvedUrls = urlKeys.map(async (key) => {
+    const endpoint = apiEndpoints[key]
+    if (endpoint.type === 'apiGatewayHttp') {
+      return getAPIGatewayHttpUrl(stackOutput.StackName, region, endpoint.api)
+    } else if (endpoint.type === 'apiGatewayRest') {
+      return getAPIGatewayRestUrl(stackOutput.StackName, region, endpoint.api)
+    } else if (endpoint.type === 'functionUrl') {
+      return endpoint.url
+    }
+  })
+  const allUrls = (await Promise.all(resolvedUrls))
+  deepLog('allUrls', allUrls)
+
+  urlKeys.forEach((key, i) => {
+    apiEndpoints[key].url = allUrls[i] + (apiEndpoints[key].path || '')
+  })
+
+  const foundLambdaFnUrls = getAllLambdaFunctionUrls(yaml, cfTemplateData, stackOutput)
+
+  deepLog('foundLambdaFnUrls', foundLambdaFnUrls)
+
+  let functionUrls = []
+  if (foundLambdaFnUrls && foundLambdaFnUrls.length) {
+    const functionUrlsPromises = foundLambdaFnUrls.map((fn) => {
+      const name = (fn && fn.Properties && fn.Properties.FunctionName) ? fn.Properties.FunctionName : fn.fnName
+      if (fn.url) {
+        return fn
+      }
+      console.log('name', name)
+      return getFunctionUrlConfig(name, getRegionFromArn(stackOutput.StackId))
+    })
+
+    functionUrls = (await Promise.all(functionUrlsPromises)).filter(Boolean)
+    deepLog('resolved functionUrls', functionUrls)
+  }
+
+  if (functionUrls && functionUrls.length) {
+    functionUrls.forEach((fnUrlInfo) => {
+      const functionName = fnUrlInfo.fnName
+      const functionUrl = fnUrlInfo.url
+      const methods = fnUrlInfo.methods || []
+      deepLog('fnUrlInfo', fnUrlInfo)
+
+      const set =  {
+        api: fnUrlInfo.fnResource.logicalId,
+        url: functionUrl,
+        type: 'functionUrl',
+        methods: methods,
+        Properties: fnUrlInfo.fnUrlResource.Properties,
+        resourceName: fnUrlInfo.fnUrlResource.logicalId
+      }
+
+      if (fnUrlInfo.fnUrlResource && fnUrlInfo.fnUrlResource.logicalId) {
+        apiEndpoints[fnUrlInfo.fnUrlResource.logicalId] = set
+      }
+
+      // apiEndpoints[functionName] = set
+    })
+  }
+  deepLog('apiEndpoints', apiEndpoints)
+
+  // process.exit(0)
+
   // return
 
   let manifestData = Object.keys(yaml.functions).reduce((obj, functionName) => {
@@ -1176,6 +1492,7 @@ function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, region
     const finalFunctionData = {
       [`${functionName}`]: {
         name: getFunctionNameFromArn(liveFunctionData.OutputValue),
+        description: functionData.description || '',
         arn: liveFunctionData.OutputValue,
         runtime: functionRuntime,
         triggers: functionEventTriggers,
@@ -1225,22 +1542,33 @@ function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, region
   if (apiEndpoints) {
     manifestData = Object.keys(apiEndpoints).reduce((obj, endpointName) => {
       const endpointData = apiEndpoints[endpointName]
-      // console.log('endpointData', endpointData)
+      console.log('endpointData', endpointData)
+      const methods = endpointData.methods || []
 
       // add endpoints to manifestData byPath
       const byPath = obj.urls['byPath']
-      byPath[endpointData.path] = endpointData
+      byPath[endpointData.path || endpointData.url] = endpointData
 
       // Add endpoints to byMethod
       const byMethod = obj.urls['byMethod']
-      endpointData.methods.forEach((endpointMethod) => {
+      methods.forEach((endpointMethod) => {
         const method = endpointMethod.httpMethod
-        byMethod[method] = byMethod[method] ? byMethod[method].concat(endpointData.path) : [endpointData.path]
+        const fullUrl = endpointData.url + (endpointData.path || '')
+        byMethod[method] = byMethod[method] ? byMethod[method].concat(fullUrl) : [fullUrl]
       })
 
       // obj.endpoints[endpointName] = apiEndpoints[endpointName]
       return obj
     }, manifestData)
+  }
+
+  if (functionUrls && functionUrls.length) {
+    // const x = functionUrls.reduce((acc, fnUrlInfo) => {
+    //   // acc[fn.fnName] = fn
+    //   // console.log('fnUrlInfo', fnUrlInfo)
+    //   return acc
+    // }, manifestData)
+    // console.log('x', x)
   }
 
   return manifestData
@@ -1284,10 +1612,6 @@ async function runPostManifest(filePath, manifestData, opts = {}) {
     throw new Error(err)
   }
   return returnValue
-}
-
-function upperCase(str) {
-  return str.toUpperCase()
 }
 
 // is plain object
@@ -1390,7 +1714,7 @@ function getFunctionPath(functionData, yaml, directory) {
   return fullFilePath
 }
 
-function getRESTUrl(outputs) {
+function getRESTUrl(outputs = []) {
   return outputs.reduce((acc, curr) => {
     if (curr.OutputKey === 'ServiceEndpoint') {
       return curr.OutputValue
@@ -1399,7 +1723,7 @@ function getRESTUrl(outputs) {
   }, '')
 }
 
-function getHTTPUrl(outputs) {
+function getHTTPUrl(outputs = []) {
   return outputs.reduce((acc, curr) => {
     if (curr.OutputKey === 'HttpApiUrl') {
       return curr.OutputValue
@@ -1408,8 +1732,14 @@ function getHTTPUrl(outputs) {
   }, '')
 }
 
-function getFunctionRuntime(functionData, yaml) {
-  return functionData.runtime || yaml.provider.runtime
+function getFunctionRuntime(functionData = {}, yaml = {}) {
+  if (functionData.runtime) {
+    return functionData.runtime
+  }
+  if (yaml.provider && yaml.provider.runtime) {
+    return yaml.provider.runtime
+  }
+  return 'NA'
 }
 
 function getFunctionRuntimeExtension(runtime) {
@@ -1440,14 +1770,6 @@ function getFunctionData(functionName, outputs) {
     OutputValue: 'Not deployed yet',
     Description: 'Draft Lambda function'
   }
-}
-
-function getFunctionNameFromArn(arn) {
-  return arn.split(':')[6]
-}
-
-function upperCaseFirst(string) {
-  return string.charAt(0).toUpperCase() + string.slice(1)
 }
 
 module.exports = ServerlessManifestPlugin

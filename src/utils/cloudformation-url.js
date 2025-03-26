@@ -27,4 +27,4 @@ function getCloudFormationConsoleUrl(region, fullStackId) {
 
 module.exports = {
   getCloudFormationConsoleUrl
-};
+}
