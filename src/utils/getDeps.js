@@ -117,16 +117,27 @@ Please ensure "${moduleName}" is installed in the project.`)
     }
     modulePaths.add(currentModulePath)
     pkgs[currentModulePath] = packageJson;
-    ['dependencies', 'peerDependencies', 'optionalDependencies'].forEach(
-      key => {
+    ['dependencies', 'peerDependencies', 'optionalDependencies'].forEach((key) => {
         const dependencies = packageJson[key]
 
         if (dependencies) {
           Object.keys(dependencies).forEach(dependency => {
+            // Check if this is an optional peer dependency
+            const isOptionalPeer = key === 'peerDependencies' && 
+              packageJson.peerDependenciesMeta && 
+              packageJson.peerDependenciesMeta[dependency] && 
+              packageJson.peerDependenciesMeta[dependency].optional
+
+            // Combine optionalDependencies with optional peer dependencies
+            const optionalDeps = {
+              ...(packageJson.optionalDependencies || {}),
+              ...(isOptionalPeer ? { [dependency]: true } : {})
+            }
+
             handle(
               dependency,
               currentModulePath,
-              packageJson.optionalDependencies
+              optionalDeps
             )
           })
         }
