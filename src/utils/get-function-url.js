@@ -30,6 +30,16 @@ async function getFunctionUrlConfig(functionName, region) {
   }
 }
 
+function getRegionFromUrl(url = '') {
+  const apiGatewayMatch = url.match(/execute-api\.([\w-]+)\.amazonaws\.com/)
+  if (apiGatewayMatch) return apiGatewayMatch[1]
+  
+  const lambdaMatch = url.match(/lambda-url\.([\w-]+)\.on\.aws/)
+  if (lambdaMatch) return lambdaMatch[1]
+  
+  return null
+}
+
 function removeDuplicates(arr) {
   const grouped = {}
   

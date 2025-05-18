@@ -22,14 +22,17 @@
     "@aws-sdk/client-api-gateway": "^3.775.0",
     "@aws-sdk/client-apigatewayv2": "^3.775.0",
     "@aws-sdk/client-cloudformation": "^3.774.0",
+    "@aws-sdk/client-cloudfront": "^3.775.0",
     "@aws-sdk/client-lambda": "^3.774.0",
+    "@aws-sdk/client-route-53": "^3.775.0",
     "debug": "^4.3.1",
     "npm-packlist": "^1.4.1",
     "parse-gitignore": "^1.0.1",
     "precinct": "^8.1.0",
     "read-pkg-up": "^7.0.1",
     "require-package-name": "^2.0.1",
-    "resolve": "^1.20.0"
+    "resolve": "^1.20.0",
+    "safe-await": "^2.0.0"
   },
   "devDependencies": {
     "auto-changelog": "^2.2.1"

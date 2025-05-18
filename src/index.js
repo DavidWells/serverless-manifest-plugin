@@ -4,13 +4,15 @@ const path = require('path')
 const { promisify } = require('util')
 const { ensureGitIgnore } = require('./utils/gitignore')
 const { getDependencies, getShallowDeps } = require('./utils/getDeps')
-const { getCloudFormationConsoleUrl } = require('./utils/cloudformation-url')
+const { getCloudFormationConsoleUrl } = require('./utils/cloudformation/get-cloudformation-console-url')
 const { fsExistsSync } = require('./utils/fs')
 const { getResourceInfo } = require('./utils/get-resource-info')
 const { getFunctionUrlConfig, removeDuplicates } = require('./utils/get-function-url')
 const { getRegionFromArn, getFunctionNameFromArn, upperCase, upperCaseFirst } = require('./utils/string')
-const { getAPIGatewayHttpUrl } = require('./utils/cloudformation/get-apigateway-http')
-const { getAPIGatewayRestUrl } = require('./utils/cloudformation/get-apigateway-rest')
+const { getAPIGatewayHttpUrl, getAPIGatewayHttpDetailsByLogicalId } = require('./utils/cloudformation/get-apigateway-http')
+const { getAPIGatewayRestUrl, getAPIGatewayRestDetailsByLogicalId } = require('./utils/cloudformation/get-apigateway-rest')
+const { getRestApiDomainNames } = require('./utils/apigateway-rest/get-domain-names')
+const { combineMatchingItems } = require('./utils/array')
 const { deepLog } = require('./utils/log')
 const readFile = promisify(fs.readFile)
 const writeFile = promisify(fs.writeFile)
@@ -1025,49 +1027,6 @@ function getApiGatewayRestEndpoints(resources) {
   return apiEndpoints
 }
 
-
-
-/**
- * Combines array items with matching path and ApiId
- * @param {Array<Object>} input Array of items with path, methods, ApiId and any other properties
- * @return {Array<Object>} Combined items
- */
-function combineMatchingItems(input) {
-  const groupedMap = {}
-  
-  for (const item of input) {
-    const key = item.path + "||" + item.ApiId
-    
-    if (!groupedMap[key]) {
-      // Create a new object with all properties from original item
-      const newItem = {}
-      for (const prop in item) {
-        if (prop === 'methods') {
-          newItem[prop] = item[prop].slice() // Copy methods array
-        } else {
-          newItem[prop] = item[prop] // Copy all other properties
-        }
-      }
-      groupedMap[key] = newItem
-    } else {
-      // Keep existing properties but merge methods
-      const existing = groupedMap[key]
-      for (let i = 0; i < item.methods.length; i++) {
-        existing.methods.push(item.methods[i])
-      }
-      
-      // Copy any properties that might exist in this item but not in existing
-      for (const prop in item) {
-        if (prop !== 'methods' && !(prop in existing)) {
-          existing[prop] = item[prop]
-        }
-      }
-    }
-  }
-  
-  return Object.values(groupedMap)
-}
-
 /*
 {
   OutputKey: 'YoLambdaFunctionUrl',
@@ -1138,29 +1097,6 @@ function getAllLambdaFunctionUrls(yaml, compiledCf, stackOutput) {
     }
   })
   deepLog('fromOutputs', fromOutputs)
-
-  function resolveFunction(resourceDetails, compiledCf) {
-    if (typeof resourceDetails === 'string') {
-      return resourceDetails
-    }
-    const functionProperties = resourceDetails.Properties || {}
-    if (resourceDetails && functionProperties && functionProperties.TargetFunctionArn) {
-      if (typeof functionProperties.TargetFunctionArn == 'string' && functionProperties.TargetFunctionArn.includes('arn:aws:lambda')) {
-        return [ undefined, getFunctionNameFromArn(functionProperties.TargetFunctionArn) ]
-      }
-      const targetDetails = functionProperties.TargetFunctionArn
-      if (targetDetails) {
-        if (targetDetails['Fn::GetAtt'] && targetDetails['Fn::GetAtt'].length === 2 && targetDetails['Fn::GetAtt'][1] === 'Arn') {
-          const logicalId = targetDetails['Fn::GetAtt'][0]
-          const fnResource = compiledCf.Resources[logicalId]
-          return [logicalId, fnResource]
-        } else if (targetDetails.Ref) {
-          const fnResource = compiledCf.Resources[targetDetails.Ref]
-          return [targetDetails.Ref, fnResource]
-        }
-      }
-    }
-  }
 
   /* Check stack resources for lambda function urls */
   const fromResources = Object.keys(compiledCf.Resources).filter((resource) => {
@@ -1262,25 +1198,6 @@ async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, 
     // process.exit(0)
   }
 
-  /* Now we are going to resolve the deployed urls */
-  const urlKeys = Object.keys(apiEndpoints)
-  const resolvedUrls = urlKeys.map(async (key) => {
-    const endpoint = apiEndpoints[key]
-    if (endpoint.type === 'apiGatewayHttp') {
-      return getAPIGatewayHttpUrl(stackOutput.StackName, region, endpoint.api)
-    } else if (endpoint.type === 'apiGatewayRest') {
-      return getAPIGatewayRestUrl(stackOutput.StackName, region, endpoint.api)
-    } else if (endpoint.type === 'functionUrl') {
-      return endpoint.url
-    }
-  })
-  const allUrls = (await Promise.all(resolvedUrls))
-  deepLog('allUrls', allUrls)
-
-  urlKeys.forEach((key, i) => {
-    apiEndpoints[key].url = allUrls[i] + (apiEndpoints[key].path || '')
-  })
-
   const foundLambdaFnUrls = getAllLambdaFunctionUrls(yaml, cfTemplateData, stackOutput)
 
   deepLog('foundLambdaFnUrls', foundLambdaFnUrls)
@@ -1325,9 +1242,96 @@ async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, 
   }
   deepLog('apiEndpoints', apiEndpoints)
 
+  /* Now we are going to resolve the deployed urls */
+  const urlKeys = Object.keys(apiEndpoints)
+  console.log('urlKeys', urlKeys)
+
+  const resolvedUrls = urlKeys.map(async (key) => {
+    const endpoint = apiEndpoints[key]
+    if (endpoint.type === 'apiGatewayHttp') {
+      return getAPIGatewayHttpDetailsByLogicalId(stackOutput.StackName, endpoint.api, region)
+    } else if (endpoint.type === 'apiGatewayRest') {
+      return getAPIGatewayRestDetailsByLogicalId(stackOutput.StackName, endpoint.api, region)
+    } else if (endpoint.type === 'functionUrl') {
+      return endpoint
+    }
+  })
+  const remoteAPIData = (await Promise.all(resolvedUrls))
+  deepLog('remoteAPIData', remoteAPIData)
+  const allUrls = remoteAPIData.map((data) => {
+    return data.url
+  })
+  deepLog('allUrls', allUrls)
+
+  const apiMap = {}
+  urlKeys.forEach((key, i) => {
+    const endpoint = apiEndpoints[key]
+    apiMap[endpoint.api] = {
+      id: remoteAPIData[i].id,
+      type: endpoint.type,
+      baseUrl: allUrls[i],
+      region: region,
+      endpointCount: apiMap[endpoint.api] ? apiMap[endpoint.api].endpointCount + 1 : 1
+      // hasAuth
+    }
+    apiEndpoints[key].url = allUrls[i] + (endpoint.path || '')
+  })
+  
+  // deepLog('apiMap', apiMap)
+  // process.exit(0)
+
   // process.exit(0)
 
   // return
+
+  const manifestUrlBase = {}
+
+  const apiMapKeys = Object.keys(apiMap)
+  if (apiMapKeys && apiMapKeys.length) {
+    /* resolve domains */
+    const domainPromises = apiMapKeys.map((key) => {
+      const api = apiMap[key]
+      return getRestApiDomainNames(api.id, api.region)
+    })
+
+    const domains = await Promise.all(domainPromises)
+    deepLog('domains', domains)
+
+    apiMapKeys.forEach((key, i) => {
+      const api = apiMap[key]
+      if(domains[i].domainName) {
+        if (api.baseUrl) {
+          apiMap[key].rawBaseUrl = apiMap[key].baseUrl
+          apiMap[key].baseUrl = replaceApiGatewayUrl(apiMap[key].baseUrl, 'https://' + domains[i].domainName )
+        }
+        apiMap[key].domainName = domains[i].domainName
+      }
+    })
+
+    // deepLog('apiMap', apiMap)
+    // process.exit(0)
+
+    // deepLog('apiMapKeys', apiMapKeys)
+
+    apiMapKeys.forEach((key) => {
+      const api = apiMap[key]
+      manifestUrlBase[`${key}`] = api.baseUrl
+    })
+  }
+
+  const manifestUrls = Object.assign({}, manifestUrlBase, {
+    apiGateway: '',
+    apiGatewayBaseURL: '',
+    httpApi: '',
+    httpApiBaseURL: '',
+    byPath: {},
+    byFunction: {},
+    byMethod: {}
+  })
+
+  // deepLog('manifestUrls', manifestUrls)
+  // process.exit(0)
+
 
   let manifestData = Object.keys(yaml.functions).reduce((obj, functionName) => {
     const functionData = yaml.functions[functionName]
@@ -1526,15 +1530,8 @@ async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, 
         consoleUrl: getCloudFormationConsoleUrl(region, stackOutput.StackId)
       }
     },
-    urls: {
-      apiGateway: '',
-      apiGatewayBaseURL: '',
-      httpApi: '',
-      httpApiBaseURL: '',
-      byPath: {},
-      byFunction: {},
-      byMethod: {}
-    },
+    apis: apiMap,
+    urls: manifestUrls,
     functions: {},
     outputs: stackOutput.Outputs,
   })
@@ -1572,6 +1569,54 @@ async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, 
   }
 
   return manifestData
+}
+
+/**
+ * Replace AWS API Gateway URL with a custom domain
+ * 
+ * @param {string} originalUrl - The original AWS API Gateway URL
+ * @param {string} customDomain - The custom domain to replace the AWS endpoint
+ * @returns {string} - The transformed URL with the custom domain
+ */
+function replaceApiGatewayUrl(originalUrl, customDomain) {
+  try {
+    // Parse the original URL
+    const url = new URL(originalUrl);
+    
+    // Remove the execute-api.region.amazonaws.com part
+    const newUrl = new URL(customDomain);
+    
+    // Preserve the path, including stage (if any)
+    // newUrl.pathname = url.pathname;
+    
+    return newUrl.toString();
+  } catch (error) {
+    console.error('Error replacing URL:', error);
+    throw error;
+  }
+}
+
+function resolveFunction(resourceDetails, compiledCf) {
+  if (typeof resourceDetails === 'string') {
+    return resourceDetails
+  }
+  const functionProperties = resourceDetails.Properties || {}
+  if (resourceDetails && functionProperties && functionProperties.TargetFunctionArn) {
+    if (typeof functionProperties.TargetFunctionArn == 'string' && functionProperties.TargetFunctionArn.includes('arn:aws:lambda')) {
+      return [ undefined, getFunctionNameFromArn(functionProperties.TargetFunctionArn) ]
+    }
+    const targetDetails = functionProperties.TargetFunctionArn
+    if (targetDetails) {
+      if (targetDetails['Fn::GetAtt'] && targetDetails['Fn::GetAtt'].length === 2 && targetDetails['Fn::GetAtt'][1] === 'Arn') {
+        const logicalId = targetDetails['Fn::GetAtt'][0]
+        const fnResource = compiledCf.Resources[logicalId]
+        return [logicalId, fnResource]
+      } else if (targetDetails.Ref) {
+        const fnResource = compiledCf.Resources[targetDetails.Ref]
+        return [targetDetails.Ref, fnResource]
+      }
+    }
+  }
 }
 
 async function runPostManifest(filePath, manifestData, opts = {}) {
@@ -1628,13 +1673,20 @@ function isObject(obj) {
 
 // Add dependency versions to package names
 function addDependencyVersions(array, pkgData) {
+  // return array.map((name) => {
+  //   if (!pkgData[name] || !pkgData[name]._from) {
+  //     return name
+  //   }
+  //   const from = pkgData[name]._from
+  //   const pkgWithVersion = from.match(/@/) ? from : `${from}@${pkgData[name].version}`
+  //   return pkgWithVersion
+  // })
   return array.map((name) => {
-    if (!pkgData[name] || !pkgData[name]._from) {
+    if (!pkgData[name]) {
       return name
     }
-    const from = pkgData[name]._from
-    const pkgWithVersion = from.match(/@/) ? from : `${from}@${pkgData[name].version}`
-    return pkgWithVersion
+    const version = pkgData[name].version
+    return `${name}@${version}`
   })
 }
 

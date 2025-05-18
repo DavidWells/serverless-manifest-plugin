@@ -3,7 +3,7 @@ const { CloudFormationClient, DescribeStackResourcesCommand } = require("@aws-sd
 let memoryCache = {}
 let client
 
-async function getStackLiveResources(stackName, region) {
+async function describeStackResources(stackName, region) {
   const cacheKey = `${stackName}-${region}`
   if (memoryCache[cacheKey]) {
     return memoryCache[cacheKey]
@@ -30,11 +30,11 @@ async function getStackLiveResources(stackName, region) {
 }
 
 if (require.main === module) {
-  getStackLiveResources('test-service-for-manifest-plugin-dev', 'us-east-1').then((resources) => {
+  describeStackResources('test-service-for-manifest-plugin-dev', 'us-east-1').then((resources) => {
     console.log(resources)
   })
 }
 
 module.exports = {
-  getStackLiveResources
+  describeStackResources
 }
