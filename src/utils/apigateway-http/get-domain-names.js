@@ -26,7 +26,7 @@ async function getHTTPApiDomainNames(apiId, region) {
     throw err
   }
 
-  console.log('apiData', apiData)
+  console.log('APIGatewayHttp details', apiData)
 
   try {
     // Check if domains are in cache, otherwise fetch them

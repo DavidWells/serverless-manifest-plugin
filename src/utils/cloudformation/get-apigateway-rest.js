@@ -1,3 +1,4 @@
+const safe = require('safe-await')
 const { describeStackResource } = require("./describe-stack-resource")
 const { getAPIGatewayRestDetails } = require("../apigateway-rest/get-api-details")
 
@@ -9,19 +10,35 @@ async function getAPIGatewayRestDetailsByLogicalId(stackName, logicalId, region)
     return memoryCache[cacheKey]
   }
   /* Get resource by logicalId */
-  const stackResourceDetail = await describeStackResource(stackName, logicalId, region)
+  const [stackResourceResult, stackResourceError] = await safe(describeStackResource(stackName, logicalId, region))
+  if (stackResourceError) {
+    console.log(`${logicalId} not found in ${stackName}`)
+  }
+  const stackResourceDetail = stackResourceResult || {}
   /*
   console.log('stackResourceDetail', stackResourceDetail)
   /** */
   
   /* Get API details */
   const restApiId = stackResourceDetail.PhysicalResourceId
-  const apiData = await getAPIGatewayRestDetails(restApiId, region)
+
+  if (!restApiId) {
+    console.log(`${logicalId} not found in ${stackName}`)
+    return {}
+  }
+
+  console.log('restApiId', restApiId)
+  const [apiDataResult, apiDataError] = await safe(getAPIGatewayRestDetails(restApiId, region))
+  if (apiDataError) {
+    console.log(`${restApiId} not found in ${stackName}`)
+  }
+  const apiData = apiDataResult || {}
   /*
   console.log('apiData', apiData)
   /** */
-
-  memoryCache[cacheKey] = apiData
+  if (apiDataResult) {
+    memoryCache[cacheKey] = apiData
+  }
   return apiData
 }
 
