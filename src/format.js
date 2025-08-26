@@ -1,6 +1,7 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const safe = require('safe-await')
 const { getDependencies, getShallowDeps } = require('./utils/getDeps')
 const { getCloudFormationConsoleUrl } = require('./utils/cloudformation/get-cloudformation-console-url')
 const { getFunctionUrlConfig, removeDuplicates } = require('./utils/get-function-url')
@@ -11,9 +12,11 @@ const { getHTTPApiDomainNames } = require('./utils/apigateway-http/get-domain-na
 const { combineMatchingItems } = require('./utils/array')
 const { getRegionFromArn, getFunctionNameFromArn, upperCase, upperCaseFirst } = require('./utils/string')
 const { deepLog } = require('./utils/log')
+const { describeStackResource } = require('./utils/cloudformation/describe-stack-resource')
 
 async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, region, accountId) {
   let resources = {}
+  let unknownResources = []
   if (yaml.resources && yaml.resources.Resources) {
     resources = yaml.resources.Resources
   }
@@ -62,13 +65,38 @@ async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, 
 
   const foundLambdaFnUrls = getAllLambdaFunctionUrls(yaml, cfTemplateData, stackOutput)
 
-  // Verify they exist in the stack
+  /* Get details about the lambda function urls */
+  const foundLambdaFnUrlsDetails = await Promise.all(foundLambdaFnUrls.map(async (fn) => {
+    if (fn.fnResource && fn.fnResource.logicalId) {
+      const [resourceErr, resourceData] = await safe(
+        describeStackResource(stackOutput.StackName, fn.fnResource.logicalId, region)
+      )
 
-  deepLog('foundLambdaFnUrls', foundLambdaFnUrls)
+      if (!resourceData) {
+        console.log(`Warning: Lambda function ${fn.fnName} (${fn.fnResource.logicalId}) not found in stack ${stackOutput.StackName}`)
+        unknownResources.push(fn.fnResource)
+        return null
+      }
 
-  let functionUrls = []
-  if (foundLambdaFnUrls && foundLambdaFnUrls.length) {
-    const functionUrlsPromises = foundLambdaFnUrls.map((fn) => {
+      if (resourceData.arn) {
+        return {
+          arn: resourceData.arn,
+          ...fn,
+        }
+      }
+
+      console.log('resourceData', resourceData)
+      return fn
+    }
+    return fn
+  }))
+
+  const validLambdaFnUrls = foundLambdaFnUrlsDetails.filter(Boolean)
+  deepLog('verifiedLambdaFnUrls', validLambdaFnUrls)
+
+  let deployedFunctionUrls = []
+  if (validLambdaFnUrls && validLambdaFnUrls.length) {
+    const deployedFunctionUrlsDetails = validLambdaFnUrls.map((fn) => {
       const name = (fn && fn.Properties && fn.Properties.FunctionName) ? fn.Properties.FunctionName : fn.fnName
       if (fn.url) {
         return fn
@@ -77,20 +105,20 @@ async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, 
       return getFunctionUrlConfig(name, getRegionFromArn(stackOutput.StackId))
     })
 
-    functionUrls = (await Promise.all(functionUrlsPromises)).filter(Boolean)
-    deepLog('resolved functionUrls', functionUrls)
-    process.exit(0)
+    deployedFunctionUrls = (await Promise.all(deployedFunctionUrlsDetails)).filter(Boolean)
+    deepLog('resolved deployedFunctionUrls', deployedFunctionUrls)
+    // process.exit(0)
   }
 
-  if (functionUrls && functionUrls.length) {
-    functionUrls.forEach((fnUrlInfo) => {
+  if (deployedFunctionUrls && deployedFunctionUrls.length) {
+    deployedFunctionUrls.forEach((fnUrlInfo) => {
       const functionName = fnUrlInfo.fnName
       const functionUrl = fnUrlInfo.url
       const resourceInfo = fnUrlInfo.fnResource || {}
       const methods = fnUrlInfo.methods || []
       deepLog('fnUrlInfo', fnUrlInfo)
 
-      const set =  {
+      const set = {
         api: resourceInfo.logicalId,
         url: functionUrl,
         type: 'functionUrl',
@@ -124,6 +152,16 @@ async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, 
   })
 
   const remoteAPIData = (await Promise.all(resolvedUrls))
+
+  const nonFoundAPIResources = Array.from(new Set(urlKeys.map((key, i) => {
+    const endpoint = apiEndpoints[key]
+    if (!remoteAPIData[i].url) {
+      return endpoint.api
+    }
+    return null
+  }).filter(Boolean)))
+  deepLog('nonFoundAPIResources', nonFoundAPIResources)
+
   deepLog('remoteAPIData', remoteAPIData)
   const allUrls = remoteAPIData.map((data) => {
     return data.url
@@ -132,14 +170,18 @@ async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, 
 
   const apiMap = {}
   urlKeys.forEach((key, i) => {
+    console.log('key', key)
     const endpoint = apiEndpoints[key]
+    console.log('endpoint data', endpoint)
+    const id = remoteAPIData[i].id || remoteAPIData[i].ApiId
     apiMap[endpoint.api] = {
-      id: remoteAPIData[i].id || remoteAPIData[i].ApiId,
+      id: id,
       type: endpoint.type,
       baseUrl: allUrls[i],
       region: region,
-      endpointCount: apiMap[endpoint.api] ? apiMap[endpoint.api].endpointCount + 1 : 1
+      endpointCount: apiMap[endpoint.api] ? apiMap[endpoint.api].endpointCount + 1 : 1,
       // hasAuth
+      isDeployed: Boolean(id)
     }
     apiEndpoints[key].url = allUrls[i] + (endpoint.path || '')
   })
@@ -442,13 +484,17 @@ async function getFormattedData(yaml = {}, stackOutput, srcDir, cfTemplateData, 
     }, manifestData)
   }
 
-  if (functionUrls && functionUrls.length) {
-    // const x = functionUrls.reduce((acc, fnUrlInfo) => {
+  if (deployedFunctionUrls && deployedFunctionUrls.length) {
+    // const x = deployedFunctionUrls.reduce((acc, fnUrlInfo) => {
     //   // acc[fn.fnName] = fn
     //   // console.log('fnUrlInfo', fnUrlInfo)
     //   return acc
     // }, manifestData)
     // console.log('x', x)
+  }
+
+  if (unknownResources.length) {
+    console.log('unknownResources', unknownResources)
   }
 
   return manifestData
