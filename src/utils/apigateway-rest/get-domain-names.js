@@ -22,7 +22,7 @@ async function getRestApiDomainNames(apiId, region) {
   /* Verify API exists */
   const [err, apiData] = await safe(getAPIGatewayRestDetails(apiId, region))
   if (err) {
-    console.error("Error fetching API details:", err)
+    console.error(`Error fetching getAPIGatewayRestDetails ${apiId} ${region}`, err)
     throw err
   }
   

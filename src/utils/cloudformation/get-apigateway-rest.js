@@ -10,9 +10,9 @@ async function getAPIGatewayRestDetailsByLogicalId(stackName, logicalId, region)
     return memoryCache[cacheKey]
   }
   /* Get resource by logicalId */
-  const [stackResourceResult, stackResourceError] = await safe(describeStackResource(stackName, logicalId, region))
+  const [ stackResourceError, stackResourceResult] = await safe(describeStackResource(stackName, logicalId, region))
   if (stackResourceError) {
-    console.log(`${logicalId} not found in ${stackName}`)
+    console.log(`${logicalId} not found in ${stackName}`, stackResourceError)
   }
   const stackResourceDetail = stackResourceResult || {}
   /*
@@ -28,7 +28,7 @@ async function getAPIGatewayRestDetailsByLogicalId(stackName, logicalId, region)
   }
 
   console.log('restApiId', restApiId)
-  const [apiDataResult, apiDataError] = await safe(getAPIGatewayRestDetails(restApiId, region))
+  const [ apiDataError, apiDataResult ] = await safe(getAPIGatewayRestDetails(restApiId, region))
   if (apiDataError) {
     console.log(`${restApiId} not found in ${stackName}`)
   }

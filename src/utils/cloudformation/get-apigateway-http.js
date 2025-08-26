@@ -1,4 +1,4 @@
-const safeAwait = require('safe-await')
+const safe = require('safe-await')
 const { getAPIGatewayHttpDetails } = require("../apigateway-http/get-api-details")
 const { describeStackResource } = require("./describe-stack-resource")
 
@@ -12,9 +12,9 @@ async function getAPIGatewayHttpDetailsByLogicalId(stackName, logicalId, region 
   }
   
   /* Get resource by logicalId */
-  const [stackResourceResult, stackResourceError] = await safeAwait(describeStackResource(stackName, logicalId, region))
+  const [ stackResourceError, stackResourceResult ] = await safe(describeStackResource(stackName, logicalId, region))
   if (stackResourceError) {
-    console.log(`${logicalId} not found in ${stackName}`)
+    console.log(`${logicalId} not found in ${stackName}`, stackResourceError)
   }
   const stackResourceDetail = stackResourceResult || {}
   /*
@@ -28,7 +28,7 @@ async function getAPIGatewayHttpDetailsByLogicalId(stackName, logicalId, region 
     return {}
   }
   
-  const [apiDataResult, apiDataError] = await safeAwait(getAPIGatewayHttpDetails(apiId, region))
+  const [ apiDataError, apiDataResult ] = await safe(getAPIGatewayHttpDetails(apiId, region))
   if (apiDataError) {
     console.log(`${apiId} not found in ${stackName}`)
   }

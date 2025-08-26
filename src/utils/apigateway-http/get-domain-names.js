@@ -22,7 +22,7 @@ async function getHTTPApiDomainNames(apiId, region) {
     /* Verify API exists */
   const [err, apiData] = await safe(getAPIGatewayHttpDetails(apiId, region))
   if (err) {
-    console.error("Error fetching API details:", err)
+    console.error("Error fetching getAPIGatewayHttpDetails details:", err)
     throw err
   }
 
