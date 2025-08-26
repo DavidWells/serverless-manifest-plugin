@@ -196,7 +196,7 @@ class ServerlessManifestPlugin {
         stageData[stage] = manifestData
         return stageData
       } catch (err) {
-        console.log('err', err)
+        console.log('Get Data Error', err)
         this.serverless.cli.log(`Error fetching CloudFormation data: ${err.message}`)
         // Return empty data on error to allow continued operation
         var stageData = {}
